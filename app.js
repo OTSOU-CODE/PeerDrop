@@ -97,6 +97,14 @@ $('btn-leave-room').addEventListener('click', () => {
   window.location.reload();
 });
 
+// File Protocol Warning
+if (window.location.protocol === 'file:') {
+  const warn = document.createElement('div');
+  warn.style = "background: #ef4444; color: white; text-align: center; padding: 10px; font-weight: bold; position: fixed; top: 0; left: 0; right: 0; z-index: 9999;";
+  warn.innerHTML = "⚠️ You are opening this file directly from your hard drive (file://). Browsers block WebRTC connections this way! <br/> Please push to GitHub Pages or use a local HTTP server.";
+  document.body.appendChild(warn);
+}
+
 $('btn-copy-link').addEventListener('click', () => {
   const url = `${location.origin}${location.pathname}#${$('room-code-display').textContent}`;
   navigator.clipboard.writeText(url).then(() => {
@@ -140,8 +148,13 @@ function sendChatMessage() {
     addChatToFeed(msg);
     broadcast(msg);
   } else {
-    addChatToFeed(msg); // Show locally
-    hostConn.send(msg); // Send to host
+    if (hostConn && hostConn.open) {
+      chatInput.value = '';
+      addChatToFeed(msg); // Show locally
+      hostConn.send(msg); // Send to host
+    } else {
+      alert("Not connected to the room yet! Please wait for the connection to establish.");
+    }
   }
 }
 
@@ -321,7 +334,11 @@ function handleFilesSelected(files) {
     if (role === 'host') {
       broadcast(msg);
     } else {
-      hostConn.send(msg);
+      if (hostConn && hostConn.open) {
+        hostConn.send(msg);
+      } else {
+        alert("Not connected to the room yet! Cannot share file.");
+      }
     }
   }
 }
