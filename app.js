@@ -348,7 +348,7 @@ function addFileToFeed(fileMeta) {
   hide('empty-feed-msg');
   
   const feed = $('file-feed');
-  const isMine = fileMeta.ownerId === peer.id || fileMeta.isMine;
+  const isMine = fileMeta.ownerId === peer.id;
 
   const div = document.createElement('div');
   div.className = 'file-chip';
