@@ -1,0 +1,131 @@
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px}
+body{font-family:'Inter',sans-serif;background:#050510;color:#f0f0ff;min-height:100vh;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+[hidden]{display:none!important}
+
+/* ── Background ───────────────────────────────────────────────────────────── */
+.mesh-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse at 15% 55%,rgba(26,5,60,.95) 0%,transparent 55%),
+             radial-gradient(ellipse at 85% 15%,rgba(10,28,80,.9) 0%,transparent 55%),
+             radial-gradient(ellipse at 50% 85%,rgba(8,38,38,.85) 0%,transparent 55%),#050510;
+  background-size:200% 200%;animation:meshShift 16s ease-in-out infinite alternate}
+@keyframes meshShift{0%{background-position:0% 50%}50%{background-position:100% 0%}100%{background-position:50% 100%}}
+#particles{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.35}
+
+/* ── Layout ───────────────────────────────────────────────────────────────── */
+.view{position:relative;z-index:1;max-width:560px;margin:0 auto;padding:0 20px 80px;display:flex;flex-direction:column;gap:18px}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+.site-header{display:flex;align-items:center;justify-content:space-between;padding:32px 0 10px}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{font-size:1.6rem;background:linear-gradient(135deg,#a855f7,#0d9488);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.logo-text{font-size:1.5rem;font-weight:700;letter-spacing:-.025em;background:linear-gradient(130deg,#a855f7 20%,#0d9488 80%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+/* ── Status badge ─────────────────────────────────────────────────────────── */
+.status-badge{display:inline-flex;align-items:center;gap:8px;padding:5px 14px;border-radius:999px;font-size:.75rem;font-weight:600;border:1px solid;transition:all .3s}
+.status--connecting{background:rgba(250,204,21,.08);border-color:rgba(250,204,21,.25);color:#fbbf24}
+.status--ready{background:rgba(13,148,136,.1);border-color:rgba(13,148,136,.3);color:#0d9488}
+.status--error{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:#f87171}
+.status-dot{width:7px;height:7px;border-radius:50%;background:currentColor;animation:dotPulse 2s ease-in-out infinite}
+@keyframes dotPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.75)}}
+
+/* ── Glass card ───────────────────────────────────────────────────────────── */
+.glass-card{background:rgba(8,8,22,.72);backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:.5px solid rgba(255,255,255,.09);border-radius:22px;padding:28px;transition:border-color .3s}
+.glass-card:hover{border-color:rgba(255,255,255,.14)}
+
+/* ── Code card ────────────────────────────────────────────────────────────── */
+.code-card{display:flex;flex-direction:column;gap:12px;text-align:center}
+.card-label{font-size:.68rem;font-weight:700;letter-spacing:.12em;color:rgba(255,255,255,.3)}
+.peer-code{font-family:'JetBrains Mono',monospace;font-size:2.8rem;font-weight:600;letter-spacing:.25em;background:linear-gradient(135deg,#a855f7,#0d9488);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;padding:10px 0}
+.code-hint{font-size:.78rem;color:rgba(255,255,255,.38);line-height:1.5}
+.share-url-row{display:flex;gap:8px;margin-top:4px}
+.qr-wrap{display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:14px}
+.qr-wrap img{border-radius:8px}
+.qr-label{font-size:.7rem;color:rgba(255,255,255,.28)}
+
+/* ── Drop zone ────────────────────────────────────────────────────────────── */
+.drop-zone{border:1.5px dashed rgba(255,255,255,.13);border-radius:16px;padding:52px 24px;text-align:center;cursor:pointer;position:relative;outline:none;transition:all .25s}
+.drop-zone:hover,.drop-zone:focus,.drop-zone.over{border-color:rgba(13,148,136,.55);background:rgba(13,148,136,.04);transform:scale(1.008)}
+.drop-zone-pulse{position:absolute;inset:0;border-radius:16px;pointer-events:none;border:1.5px solid rgba(13,148,136,.28);animation:zonePulse 2.4s ease-in-out infinite}
+@keyframes zonePulse{0%,100%{opacity:.5;transform:scale(1)}50%{opacity:0;transform:scale(1.025)}}
+.dz-icon{margin-bottom:16px}
+.dz-main{font-size:1rem;font-weight:600;color:rgba(255,255,255,.88)}
+.dz-sub{font-size:.82rem;color:rgba(255,255,255,.35);margin-top:7px}
+.dz-browse{color:#a78bfa;cursor:pointer}
+.dz-browse:hover{text-decoration:underline}
+
+/* ── State boxes ──────────────────────────────────────────────────────────── */
+.state-box{display:flex;flex-direction:column;gap:14px;padding:10px 0}
+.state-center{align-items:center;text-align:center;padding:24px 0}
+
+/* ── File chip ────────────────────────────────────────────────────────────── */
+.file-chip{display:flex;align-items:center;gap:13px;padding:13px 15px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:12px}
+.file-emoji{font-size:2rem;line-height:1;flex-shrink:0}
+.file-chip-info{flex:1;min-width:0}
+.file-chip-name{font-weight:600;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-chip-size{font-size:.75rem;color:rgba(255,255,255,.38);margin-top:2px}
+.up-pct{font-size:1rem;font-weight:700;color:#0d9488;margin-left:auto;flex-shrink:0}
+
+/* ── Waiting animation ────────────────────────────────────────────────────── */
+.waiting-anim{position:relative;width:64px;height:64px;margin:0 auto}
+.waiting-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(168,85,247,.4);animation:ring 2s ease-out infinite}
+.waiting-ring--2{animation-delay:.7s}
+@keyframes ring{0%{transform:scale(.8);opacity:1}100%{transform:scale(1.6);opacity:0}}
+.waiting-text{font-size:.92rem;font-weight:600;text-align:center}
+.waiting-sub{font-size:.78rem;color:rgba(255,255,255,.38);text-align:center}
+.waiting-sub strong{color:#a78bfa}
+
+/* ── Progress ─────────────────────────────────────────────────────────────── */
+.progress-track{width:100%;height:6px;background:rgba(255,255,255,.07);border-radius:999px;overflow:hidden}
+.progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#7c3aed,#0d9488);transition:width .15s ease;position:relative;width:0%}
+.progress-fill::after{content:'';position:absolute;top:0;right:0;bottom:0;width:50px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35));animation:shimmer 1.5s ease-in-out infinite}
+@keyframes shimmer{0%,100%{opacity:0}50%{opacity:1}}
+
+/* ── Stat row ─────────────────────────────────────────────────────────────── */
+.stat-row{display:flex;gap:10px;flex-wrap:wrap}
+.stat-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 13px;font-size:.78rem;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:8px;color:rgba(255,255,255,.65)}
+
+/* ── Done box ─────────────────────────────────────────────────────────────── */
+.done-box{align-items:center;text-align:center;padding:20px 0}
+.done-icon{font-size:3.5rem;line-height:1}
+.done-text{font-size:1.1rem;font-weight:700;margin-top:4px}
+.done-sub{font-size:.82rem;color:rgba(255,255,255,.4)}
+
+/* ── Receiver ─────────────────────────────────────────────────────────────── */
+.recv-file-card{min-height:220px}
+.code-entry-row{display:flex;gap:9px;margin-top:12px}
+.code-input-big{font-size:1.4rem;font-weight:600;letter-spacing:.18em;text-transform:uppercase;text-align:center}
+.connect-err{font-size:.8rem;color:#f87171;margin-top:6px}
+
+/* ── Inputs ───────────────────────────────────────────────────────────────── */
+.glass-input{flex:1;padding:12px 15px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:11px;color:#f0f0ff;font-family:'Inter',sans-serif;font-size:.85rem;outline:none;transition:border-color .2s;min-width:0}
+.glass-input:focus{border-color:rgba(13,148,136,.5)}
+.glass-input.mono{font-family:'JetBrains Mono',monospace;font-size:.76rem}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.btn-primary{padding:12px 22px;border:none;border-radius:11px;cursor:pointer;background:linear-gradient(135deg,#7c3aed,#0d9488);color:white;font-family:'Inter',sans-serif;font-weight:600;font-size:.85rem;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;transition:all .2s;text-decoration:none}
+.btn-primary:hover{opacity:.87;transform:scale(1.03)}
+.btn-primary:active{transform:scale(.97)}
+.btn-ghost{width:100%;padding:11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:11px;color:rgba(255,255,255,.42);font-family:'Inter',sans-serif;font-size:.82rem;cursor:pointer;transition:all .2s}
+.btn-ghost:hover{background:rgba(255,255,255,.07);color:rgba(255,255,255,.7)}
+.btn-ghost-sm{font-size:.8rem;color:rgba(255,255,255,.4);text-decoration:none;padding:6px 12px;border:1px solid rgba(255,255,255,.08);border-radius:8px;transition:all .2s}
+.btn-ghost-sm:hover{color:rgba(255,255,255,.7);background:rgba(255,255,255,.05)}
+.btn-download{width:100%;padding:16px;background:linear-gradient(135deg,#0d9488,#7c3aed);border:none;border-radius:14px;color:white;font-family:'Inter',sans-serif;font-weight:700;font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 8px 32px rgba(13,148,136,.2);transition:all .25s}
+.btn-download:hover{transform:translateY(-2px);box-shadow:0 14px 40px rgba(13,148,136,.32)}
+.btn-download:active{transform:translateY(0)}
+
+/* ── Spinner ──────────────────────────────────────────────────────────────── */
+.spinner{width:40px;height:40px;border-radius:50%;border:3px solid rgba(255,255,255,.07);border-top-color:#7c3aed;animation:spin .75s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+.site-footer{text-align:center;font-size:.72rem;color:rgba(255,255,255,.2);padding:10px 0}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media(max-width:500px){
+  .view{padding:0 12px 60px;gap:14px}
+  .glass-card{padding:20px;border-radius:18px}
+  .peer-code{font-size:2rem}
+  .share-url-row,.code-entry-row{flex-direction:column}
+  .btn-primary{width:100%;justify-content:center}
+}
