@@ -1,24 +1,15 @@
 /**
- * PeerDrop — app.js
- * Pure WebRTC P2P file transfer via PeerJS.
- * No server. Files go directly device-to-device.
+ * PeerDrop — app.js (Mesh Room Architecture)
+ * Hybrid Star-Mesh: Host relays signaling, peers transfer files directly.
  */
 'use strict';
 
-const CHUNK_SIZE = 64 * 1024; // 64 KB chunks
+const CHUNK_SIZE = 64 * 1024;
 
-// ── ID generation (6 uppercase alphanumeric chars) ────────────────────────────
-const MY_ID = Array.from(crypto.getRandomValues(new Uint8Array(6)))
-  .map(b => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
-
-// ── Detect receiver mode: URL hash = #PEERID ─────────────────────────────────
-const hashId = window.location.hash.replace('#', '').toUpperCase().trim();
-const isReceiver = hashId.length >= 4;
-
-// ── DOM helpers ───────────────────────────────────────────────────────────────
+// ── DOM Helpers ──────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
-const show = id => { const el = $(id); if (el) el.hidden = false; };
-const hide = id => { const el = $(id); if (el) el.hidden = true; };
+const show = id => { const e = $(id); if (e) { e.hidden = false; e.style.display = ''; } };
+const hide = id => { const e = $(id); if (e) e.hidden = true; };
 const fmt = b => {
   if (!b) return '0 B';
   const k = 1024, u = ['B','KB','MB','GB'];
@@ -30,34 +21,42 @@ const mimeEmoji = t => {
   if (t.startsWith('image/')) return '🖼️';
   if (t.startsWith('video/')) return '🎬';
   if (t.startsWith('audio/')) return '🎵';
-  if (t.includes('pdf')) return '📄';
   if (t.includes('zip')||t.includes('rar')) return '📦';
-  if (t.includes('text')||t.includes('json')) return '📝';
-  return '📁';
+  return '📄';
 };
 
-// ── PeerJS config (public cloud + Google STUN) ────────────────────────────────
+// ── State ────────────────────────────────────────────────────────────────────
+const MY_ID = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+  .map(b => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
+
 const PEER_CONFIG = {
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
     ]
   }
 };
 
-// ── Init particles ────────────────────────────────────────────────────────────
+let peer = null;
+let role = null; // 'host' or 'guest'
+let hostConn = null; 
+let guestConns = new Map(); // id -> DataConnection (host only)
+
+let mySharedFiles = new Map(); // fileId -> File object
+let allKnownFiles = new Map(); // fileId -> { id, name, size, mime, ownerId }
+
+// ── Background Particles ─────────────────────────────────────────────────────
 (function initParticles() {
-  const c = document.getElementById('particles');
+  const c = $('particles');
   if (!c) return;
   const ctx = c.getContext('2d');
   let W, H;
   const resize = () => { W = c.width = innerWidth; H = c.height = innerHeight; };
   resize(); window.addEventListener('resize', resize);
-  const pts = Array.from({length:55}, () => ({
-    x:Math.random()*innerWidth, y:Math.random()*innerHeight,
-    r:Math.random()*1.4+0.4, vx:(Math.random()-.5)*.25, vy:(Math.random()-.5)*.25,
-    a:Math.random()*.4+.07
+  const pts = Array.from({length:50}, () => ({
+    x:Math.random()*W, y:Math.random()*H, r:Math.random()*1.2+0.4,
+    vx:(Math.random()-.5)*.2, vy:(Math.random()-.5)*.2, a:Math.random()*.4+.05
   }));
   (function frame() {
     ctx.clearRect(0,0,W,H);
@@ -72,330 +71,382 @@ const PEER_CONFIG = {
   })();
 })();
 
-// ═══════════════════════════════════════════════════════════════════════════════
-isReceiver ? startReceiver() : startSender();
-// ═══════════════════════════════════════════════════════════════════════════════
+// ── Init UI ──────────────────────────────────────────────────────────────────
+$('btn-create-room').addEventListener('click', () => initPeer(true, MY_ID));
 
-// ═════════════════════════ SENDER ════════════════════════════════════════════
-function startSender() {
-  show('sender-view');
+$('btn-join-room').addEventListener('click', () => {
+  const code = $('input-join-code').value.toUpperCase().trim();
+  if (code.length >= 4) {
+    $('join-error').hidden = true;
+    initPeer(false, code);
+  }
+});
 
-  const myCodeEl       = $('my-code');
-  const statusBadge    = $('peer-status');
-  const statusLabel    = $('status-label');
-  const shareUrlRow    = $('share-url-row');
-  const shareUrlInput  = $('share-url-input');
-  const copyLinkBtn    = $('copy-link-btn');
-  const qrWrap         = $('qr-wrap');
-  const qrImg          = $('qr-img');
-  const dropZone       = $('drop-zone');
-  const fileInput      = $('file-input');
-  const waitingState   = $('waiting-state');
-  const sendingState   = $('sending-state');
-  const sendDoneState  = $('send-done-state');
-  const codeInline     = $('code-inline');
+// Auto-join if hash is present
+const hashId = window.location.hash.replace('#', '').toUpperCase().trim();
+if (hashId.length >= 4) {
+  initPeer(false, hashId);
+} else {
+  show('home-view');
+  hide('room-view');
+}
 
-  let selectedFile = null;
-  let activeConn   = null;
+$('btn-leave-room').addEventListener('click', () => {
+  window.location.hash = '';
+  window.location.reload();
+});
 
-  // ── Create peer ──────────────────────────────────────────────────────────────
-  const peer = new Peer(MY_ID, PEER_CONFIG);
+$('btn-copy-link').addEventListener('click', () => {
+  const url = `${location.origin}${location.pathname}#${$('room-code-display').textContent}`;
+  navigator.clipboard.writeText(url).then(() => {
+    $('btn-copy-link').textContent = 'Copied!';
+    setTimeout(() => { $('btn-copy-link').textContent = 'Copy Link'; }, 2000);
+  });
+});
+
+// ── Drop Zone ────────────────────────────────────────────────────────────────
+const dropZone = $('room-drop-zone');
+const fileInput = $('room-file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#0d9488'; dropZone.style.background = 'rgba(13,148,136,0.1)'; });
+dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = 'rgba(255,255,255,0.15)'; dropZone.style.background = 'transparent'; });
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.style.borderColor = 'rgba(255,255,255,0.15)'; dropZone.style.background = 'transparent';
+  if (e.dataTransfer.files.length > 0) handleFilesSelected(e.dataTransfer.files);
+});
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => {
+  if (e.target.files.length > 0) handleFilesSelected(e.target.files);
+  fileInput.value = '';
+});
+
+// ── PeerJS Setup ─────────────────────────────────────────────────────────────
+function initPeer(isCreatingHost, targetHostId) {
+  $('btn-create-room').textContent = 'Starting...';
+  $('btn-join-room').textContent = 'Joining...';
+
+  // If I am host, I use my generated MY_ID. If I am guest, I use a random internal ID.
+  peer = new Peer(isCreatingHost ? MY_ID : null, PEER_CONFIG);
 
   peer.on('open', id => {
-    myCodeEl.textContent = id;
-    statusBadge.className = 'status-badge status--ready';
-    statusLabel.textContent = 'Ready';
-    codeInline.textContent = id;
+    hide('home-view');
+    show('room-view');
+    
+    if (isCreatingHost) {
+      role = 'host';
+      $('room-code-display').textContent = id;
+      updateParticipantCount();
+    } else {
+      role = 'guest';
+      $('room-code-display').textContent = targetHostId;
+      connectToHost(targetHostId);
+    }
+  });
 
-    // Build share link (only useful when served via HTTP)
-    const proto = location.protocol;
-    if (proto === 'http:' || proto === 'https:') {
-      const shareUrl = `${location.origin}${location.pathname}#${id}`;
-      shareUrlInput.value = shareUrl;
-      shareUrlRow.hidden  = false;
-      qrImg.src = `https://chart.googleapis.com/chart?chs=140x140&cht=qr&chl=${encodeURIComponent(shareUrl)}&chld=M|1`;
-      qrWrap.hidden = false;
+  // Listen for incoming connections
+  peer.on('connection', conn => {
+    // Is it a direct file transfer connection?
+    if (conn.metadata && conn.metadata.transferFileId) {
+      handleIncomingFileTransfer(conn, conn.metadata.transferFileId);
+      return;
+    }
+
+    // Otherwise, it's a control connection
+    if (role === 'host') {
+      setupHostControlConnection(conn);
     }
   });
 
   peer.on('error', err => {
-    statusBadge.className = 'status-badge status--error';
-    statusLabel.textContent = 'Error: ' + err.type;
-    console.error('[PeerDrop Sender]', err);
+    console.error('[PeerJS Error]', err);
+    if (role === null) {
+      // Failed during connect
+      $('btn-create-room').textContent = '+ Create Room';
+      $('btn-join-room').textContent = 'Join';
+      $('join-error').hidden = false;
+      $('join-error').textContent = 'Could not connect to network or room.';
+    }
+  });
+}
+
+// ── Host Logic ───────────────────────────────────────────────────────────────
+function setupHostControlConnection(conn) {
+  conn.on('open', () => {
+    guestConns.set(conn.peer, conn);
+    updateParticipantCount();
+    
+    // Send current room state to new guest
+    conn.send({
+      type: 'room_state',
+      files: Array.from(allKnownFiles.values())
+    });
   });
 
-  // ── Listen for incoming connections ─────────────────────────────────────────
-  peer.on('connection', conn => {
-    activeConn = conn;
-    conn.on('open', () => {
-      if (selectedFile) {
-        sendFile(conn, selectedFile);
+  conn.on('data', data => {
+    if (data.type === 'announce') {
+      // Save it locally
+      allKnownFiles.set(data.file.id, data.file);
+      addFileToFeed(data.file);
+      // Broadcast to all other guests
+      broadcast({ type: 'announce', file: data.file }, conn.peer);
+    }
+    else if (data.type === 'request_download') {
+      // Guest A wants a file.
+      const file = allKnownFiles.get(data.fileId);
+      if (!file) return;
+
+      if (file.ownerId === MY_ID) {
+        // I own the file, initiate transfer directly
+        initiateFileTransfer(data.requesterId, file.id);
+      } else {
+        // Someone else owns it, tell them to send it to the requester
+        const ownerConn = guestConns.get(file.ownerId);
+        if (ownerConn) {
+          ownerConn.send({
+            type: 'peer_wants_file',
+            fileId: file.id,
+            requesterId: data.requesterId
+          });
+        }
       }
-      // else: wait for user to pick a file
-    });
-    conn.on('error', e => console.error('Connection error', e));
+    }
   });
 
-  // ── Copy link ────────────────────────────────────────────────────────────────
-  copyLinkBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(shareUrlInput.value).then(() => {
-      copyLinkBtn.textContent = '✓ Copied!';
-      setTimeout(() => { copyLinkBtn.textContent = 'Copy Link'; }, 2200);
-    });
+  conn.on('close', () => {
+    guestConns.delete(conn.peer);
+    updateParticipantCount();
   });
+}
 
-  // ── Drop zone ────────────────────────────────────────────────────────────────
-  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('over'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault(); dropZone.classList.remove('over');
-    const f = e.dataTransfer.files[0];
-    if (f) onFileSelected(f);
-  });
-  dropZone.addEventListener('click',   () => fileInput.click());
-  dropZone.addEventListener('keydown', e => { if (e.key==='Enter'||e.key===' ') fileInput.click(); });
-  fileInput.addEventListener('change', e => { if (e.target.files[0]) onFileSelected(e.target.files[0]); });
-
-  function onFileSelected(file) {
-    selectedFile = file;
-    $('send-icon').textContent  = mimeEmoji(file.type);
-    $('send-name').textContent  = file.name;
-    $('send-size').textContent  = fmt(file.size);
-    $('sending-icon').textContent = mimeEmoji(file.type);
-    $('sending-name').textContent = file.name;
-    $('sending-size').textContent = fmt(file.size);
-
-    // Show waiting state
-    dropZone.hidden      = true;
-    waitingState.hidden  = false;
-    sendingState.hidden  = true;
-    sendDoneState.hidden = true;
-
-    // If receiver already connected, send immediately
-    if (activeConn && activeConn.open) sendFile(activeConn, file);
+function broadcast(msg, excludePeerId = null) {
+  for (const [id, c] of guestConns) {
+    if (id !== excludePeerId && c.open) {
+      c.send(msg);
+    }
   }
+}
 
-  // ── Send file ────────────────────────────────────────────────────────────────
-  function sendFile(conn, file) {
-    waitingState.hidden  = true;
-    sendingState.hidden  = false;
-    sendDoneState.hidden = true;
+function updateParticipantCount() {
+  const count = guestConns.size + 1;
+  $('peer-count-display').textContent = `${count} participant${count > 1 ? 's' : ''}`;
+}
 
-    // Send metadata
-    conn.send(JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type }));
+// ── Guest Logic ──────────────────────────────────────────────────────────────
+function connectToHost(hostId) {
+  hostConn = peer.connect(hostId, { reliable: true });
+  
+  hostConn.on('open', () => {
+    $('peer-count-display').textContent = 'Connected to room';
+  });
 
-    let offset     = 0;
-    let speedBytes = 0;
-    const fill     = $('send-fill');
-    const pctEl    = $('send-pct');
-    const track    = $('send-track');
-    const speedEl  = $('send-speed');
+  hostConn.on('data', data => {
+    if (data.type === 'room_state') {
+      data.files.forEach(f => {
+        allKnownFiles.set(f.id, f);
+        addFileToFeed(f);
+      });
+    }
+    else if (data.type === 'announce') {
+      allKnownFiles.set(data.file.id, data.file);
+      addFileToFeed(data.file);
+    }
+    else if (data.type === 'peer_wants_file') {
+      // The host says someone wants a file I own.
+      initiateFileTransfer(data.requesterId, data.fileId);
+    }
+  });
 
-    const speedTimer = setInterval(() => {
-      speedEl.textContent = `↑ ${(speedBytes/1024/1024).toFixed(2)} MB/s`;
-      speedBytes = 0;
-    }, 1000);
+  hostConn.on('close', () => {
+    alert('The room host disconnected. Room closed.');
+    window.location.hash = '';
+    window.location.reload();
+  });
+}
 
+// ── Sharing Files ────────────────────────────────────────────────────────────
+function handleFilesSelected(files) {
+  for (const file of files) {
+    const fileId = 'f_' + Math.random().toString(36).substr(2, 9);
+    mySharedFiles.set(fileId, file);
+
+    const fileMeta = {
+      id: fileId,
+      name: file.name,
+      size: file.size,
+      mime: file.type,
+      ownerId: peer.id,
+      isMine: true
+    };
+
+    allKnownFiles.set(fileId, fileMeta);
+    addFileToFeed(fileMeta);
+
+    // Announce to network
+    const msg = { type: 'announce', file: fileMeta };
+    if (role === 'host') {
+      broadcast(msg);
+    } else {
+      hostConn.send(msg);
+    }
+  }
+}
+
+// ── Feed UI ──────────────────────────────────────────────────────────────────
+function addFileToFeed(fileMeta) {
+  hide('empty-feed-msg');
+  
+  const feed = $('file-feed');
+  const isMine = fileMeta.ownerId === peer.id || fileMeta.isMine;
+
+  const div = document.createElement('div');
+  div.className = 'file-chip';
+  div.style.background = isMine ? 'rgba(13,148,136,0.1)' : 'rgba(255,255,255,0.04)';
+  div.style.border = isMine ? '1px solid rgba(13,148,136,0.3)' : '1px solid rgba(255,255,255,0.07)';
+
+  const inner = `
+    <span class="file-emoji">${mimeEmoji(fileMeta.mime)}</span>
+    <div class="file-chip-info">
+      <p class="file-chip-name">${fileMeta.name}</p>
+      <p class="file-chip-size">${fmt(fileMeta.size)} ${isMine ? '· Shared by you' : ''}</p>
+      
+      <!-- Progress Bar (Hidden by default) -->
+      <div id="prog-wrap-${fileMeta.id}" style="display:none; margin-top:8px;">
+        <div class="progress-track">
+          <div id="prog-fill-${fileMeta.id}" class="progress-fill"></div>
+        </div>
+        <p style="font-size:0.7rem; color:#a855f7; margin-top:4px;" id="prog-txt-${fileMeta.id}">0%</p>
+      </div>
+    </div>
+    
+    ${isMine ? 
+      `<span style="font-size: 1.2rem;" title="You are hosting this file">🌐</span>` : 
+      `<button id="btn-dl-${fileMeta.id}" class="btn-primary" style="padding: 8px 16px; font-size: 0.8rem;">↓ Download</button>`
+    }
+  `;
+
+  div.innerHTML = inner;
+  
+  // Prepend so newest is at the top
+  feed.insertBefore(div, feed.firstChild);
+
+  if (!isMine) {
+    const btn = div.querySelector(`#btn-dl-${fileMeta.id}`);
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.textContent = 'Requesting...';
+      
+      // Tell the host we want this file
+      const msg = { type: 'request_download', fileId: fileMeta.id, requesterId: peer.id };
+      if (role === 'host') {
+        // We are host, ask the guest directly
+        const ownerConn = guestConns.get(fileMeta.ownerId);
+        if (ownerConn) ownerConn.send({ type: 'peer_wants_file', fileId: fileMeta.id, requesterId: peer.id });
+      } else {
+        // Ask host to relay
+        hostConn.send(msg);
+      }
+    });
+  }
+}
+
+// ── Direct File Transfer (Sender Side) ───────────────────────────────────────
+function initiateFileTransfer(targetPeerId, fileId) {
+  const file = mySharedFiles.get(fileId);
+  if (!file) return;
+
+  // Open a dedicated connection just for this file transfer
+  const xferConn = peer.connect(targetPeerId, {
+    reliable: true,
+    metadata: { transferFileId: fileId }
+  });
+
+  xferConn.on('open', () => {
+    let offset = 0;
+    
     function sendNextChunk() {
       if (offset >= file.size) {
-        conn.send(JSON.stringify({ type: 'done' }));
-        clearInterval(speedTimer);
-        fill.style.width = '100%';
-        pctEl.textContent = '100%';
-        sendingState.hidden  = true;
-        sendDoneState.hidden = false;
+        // Done
+        setTimeout(() => xferConn.close(), 500);
         return;
       }
+      
       const slice = file.slice(offset, offset + CHUNK_SIZE);
       const reader = new FileReader();
       reader.onload = e => {
-        conn.send(e.target.result);
-        const sent = e.target.result.byteLength;
-        offset     += sent;
-        speedBytes += sent;
-        const pct = Math.min(100, Math.round(offset / file.size * 100));
-        fill.style.width = pct + '%';
-        pctEl.textContent = pct + '%';
-        track.setAttribute('aria-valuenow', pct);
-        sendNextChunk();
+        xferConn.send(e.target.result);
+        offset += e.target.result.byteLength;
+        
+        // Update UI progress for uploader
+        const pct = Math.round(offset / file.size * 100);
+        const pwrap = $(`prog-wrap-${fileId}`);
+        if (pwrap) {
+          pwrap.style.display = 'block';
+          $(`prog-fill-${fileId}`).style.width = pct + '%';
+          $(`prog-txt-${fileId}`).textContent = `Uploading... ${pct}%`;
+          if (pct === 100) setTimeout(() => { pwrap.style.display = 'none'; }, 2000);
+        }
+
+        // Slight timeout prevents buffer overflow on fast local networks
+        setTimeout(sendNextChunk, 0);
       };
       reader.readAsArrayBuffer(slice);
     }
 
     sendNextChunk();
-  }
-
-  // ── Send another ─────────────────────────────────────────────────────────────
-  $('send-another-btn').addEventListener('click', () => {
-    selectedFile = null;
-    fileInput.value = '';
-    dropZone.hidden = false;
-    waitingState.hidden  = true;
-    sendingState.hidden  = true;
-    sendDoneState.hidden = true;
   });
-
-  // ── Switch to Receive Mode ───────────────────────────────────────────────────
-  const goReceiveBtn = $('go-to-receive-btn');
-  if (goReceiveBtn) {
-    goReceiveBtn.addEventListener('click', () => {
-      // Clean up sender peer
-      if (peer) peer.destroy();
-      hide('sender-view');
-      startReceiver();
-    });
-  }
 }
 
-// ═════════════════════════ RECEIVER ══════════════════════════════════════════
-function startReceiver() {
-  show('receiver-view');
+// ── Direct File Transfer (Receiver Side) ─────────────────────────────────────
+function handleIncomingFileTransfer(conn, fileId) {
+  const fileMeta = allKnownFiles.get(fileId);
+  if (!fileMeta) { conn.close(); return; }
 
-  const codeInput     = $('recv-code-input');
-  const connectBtn    = $('recv-connect-btn');
-  const connectErr    = $('recv-connect-err');
-  const enterSection  = $('recv-enter-section');
-  const fileSection   = $('recv-file-section');
-  const backBtn       = $('back-to-send');
+  const btn = $(`btn-dl-${fileId}`);
+  if (btn) btn.style.display = 'none';
+  
+  const pwrap = $(`prog-wrap-${fileId}`);
+  if (pwrap) pwrap.style.display = 'block';
 
-  let savedBlob     = null;
-  let savedFileName = '';
+  let chunks = [];
+  let receivedBytes = 0;
 
-  // ── Create our peer (no custom ID — server assigns one) ──────────────────────
-  const peer = new Peer(PEER_CONFIG);
+  conn.on('data', data => {
+    chunks.push(data);
+    receivedBytes += data.byteLength;
 
-  // ── If hash present, pre-fill code and auto-connect ──────────────────────────
-  if (hashId) {
-    codeInput.value = hashId;
-    peer.on('open', () => connectToSender(hashId));
-  }
+    const pct = Math.round(receivedBytes / fileMeta.size * 100);
+    $(`prog-fill-${fileId}`).style.width = pct + '%';
+    $(`prog-txt-${fileId}`).textContent = `Downloading... ${pct}%`;
 
-  // ── Manual connect ────────────────────────────────────────────────────────────
-  connectBtn.addEventListener('click', () => {
-    const code = codeInput.value.toUpperCase().trim();
-    if (!code) return;
-    connectToSender(code);
-  });
-  codeInput.addEventListener('keydown', e => { if (e.key === 'Enter') connectBtn.click(); });
-
-  // ── Back button ───────────────────────────────────────────────────────────────
-  backBtn.addEventListener('click', e => {
-    e.preventDefault();
-    window.location.hash = '';
-    window.location.reload();
-  });
-
-  // ── Save button ───────────────────────────────────────────────────────────────
-  $('recv-save-btn').addEventListener('click', () => {
-    if (!savedBlob) return;
-    const url = URL.createObjectURL(savedBlob);
-    const a   = document.createElement('a');
-    a.href = url; a.download = savedFileName;
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 8000);
+    if (receivedBytes >= fileMeta.size) {
+      // Done!
+      $(`prog-txt-${fileId}`).textContent = `Done!`;
+      $(`prog-txt-${fileId}`).style.color = '#0d9488';
+      
+      const blob = new Blob(chunks, { type: fileMeta.mime || 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileMeta.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      conn.close();
+    }
   });
 
-  $('recv-retry-btn').addEventListener('click', () => {
-    window.location.hash = '';
-    window.location.reload();
-  });
-
-  // ── Connect to sender ─────────────────────────────────────────────────────────
-  function connectToSender(senderId) {
-    connectErr.hidden   = true;
-    enterSection.hidden = true;
-    fileSection.hidden  = false;
-    show('recv-connecting');
-    hide('recv-waiting-file');
-    hide('recv-receiving');
-    hide('recv-done');
-    hide('recv-error-state');
-
-    const conn = peer.connect(senderId, { reliable: true });
-    let chunks    = [];
-    let received  = 0;
-    let fileMeta  = null;
-    let speedBytes = 0;
-
-    const speedTimer = setInterval(() => {
-      $('recv-speed').textContent = `↓ ${(speedBytes/1024/1024).toFixed(2)} MB/s`;
-      speedBytes = 0;
-    }, 1000);
-
-    const timeout = setTimeout(() => {
-      if (!conn.open) {
-        clearInterval(speedTimer);
-        hide('recv-connecting');
-        $('recv-error-msg').textContent = 'Could not connect. Make sure the sender is still on the page.';
-        show('recv-error-state');
+  conn.on('close', () => {
+    if (receivedBytes < fileMeta.size) {
+      if (btn) {
+        btn.style.display = '';
+        btn.textContent = 'Retry';
+        btn.disabled = false;
       }
-    }, 25000);
-
-    conn.on('open', () => {
-      clearTimeout(timeout);
-      hide('recv-connecting');
-      show('recv-waiting-file');
-    });
-
-    conn.on('data', data => {
-      if (typeof data === 'string') {
-        const msg = JSON.parse(data);
-
-        if (msg.type === 'meta') {
-          fileMeta = msg;
-          hide('recv-waiting-file');
-          show('recv-receiving');
-          $('recv-icon').textContent     = mimeEmoji(msg.mime);
-          $('recv-name').textContent     = msg.name;
-          $('recv-size-info').textContent = fmt(msg.size);
-          chunks   = [];
-          received = 0;
-        }
-
-        if (msg.type === 'done') {
-          clearInterval(speedTimer);
-          const blob = new Blob(chunks, { type: fileMeta.mime || 'application/octet-stream' });
-          savedBlob     = blob;
-          savedFileName = fileMeta.name;
-          hide('recv-receiving');
-          show('recv-done');
-          $('recv-done-name').textContent = fileMeta.name + ' · ' + fmt(fileMeta.size);
-          // Auto-trigger save
-          $('recv-save-btn').click();
-        }
-      } else {
-        // ArrayBuffer chunk
-        chunks.push(data);
-        received   += data.byteLength;
-        speedBytes += data.byteLength;
-        if (fileMeta && fileMeta.size) {
-          const pct = Math.min(100, Math.round(received / fileMeta.size * 100));
-          $('recv-fill').style.width = pct + '%';
-          $('recv-pct').textContent  = pct + '%';
-          $('recv-track').setAttribute('aria-valuenow', pct);
-        }
-      }
-    });
-
-    conn.on('error', err => {
-      clearInterval(speedTimer);
-      clearTimeout(timeout);
-      hide('recv-connecting');
-      hide('recv-waiting-file');
-      hide('recv-receiving');
-      $('recv-error-msg').textContent = 'Connection error: ' + err.message;
-      show('recv-error-state');
-    });
-
-    peer.on('error', err => {
-      clearInterval(speedTimer);
-      clearTimeout(timeout);
-      if (err.type === 'peer-unavailable') {
-        hide('recv-connecting');
-        $('recv-error-msg').textContent = 'Sender not found. Check the code and try again.';
-        show('recv-error-state');
-      }
-    });
-  }
+      $(`prog-txt-${fileId}`).textContent = `Transfer failed or interrupted.`;
+      $(`prog-txt-${fileId}`).style.color = '#f87171';
+    }
+  });
 }
