@@ -45,6 +45,7 @@ let guestConns = new Map(); // id -> DataConnection (host only)
 
 let mySharedFiles = new Map(); // fileId -> File object
 let allKnownFiles = new Map(); // fileId -> { id, name, size, mime, ownerId }
+let chatHistory = []; // Array of { type: 'chat', text, senderId, time }
 
 // ── Background Particles ─────────────────────────────────────────────────────
 (function initParticles() {
@@ -104,22 +105,45 @@ $('btn-copy-link').addEventListener('click', () => {
   });
 });
 
-// ── Drop Zone ────────────────────────────────────────────────────────────────
-const dropZone = $('room-drop-zone');
+// ── Input & Drop Zone ────────────────────────────────────────────────────────
+const roomView = $('room-view');
 const fileInput = $('room-file-input');
+const chatInput = $('chat-input');
 
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = '#0d9488'; dropZone.style.background = 'rgba(13,148,136,0.1)'; });
-dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = 'rgba(255,255,255,0.15)'; dropZone.style.background = 'transparent'; });
-dropZone.addEventListener('drop', e => {
+// Global drop zone for the room
+roomView.addEventListener('dragover', e => { e.preventDefault(); roomView.style.background = 'rgba(13,148,136,0.05)'; });
+roomView.addEventListener('dragleave', () => { roomView.style.background = 'transparent'; });
+roomView.addEventListener('drop', e => {
   e.preventDefault();
-  dropZone.style.borderColor = 'rgba(255,255,255,0.15)'; dropZone.style.background = 'transparent';
+  roomView.style.background = 'transparent';
   if (e.dataTransfer.files.length > 0) handleFilesSelected(e.dataTransfer.files);
 });
-dropZone.addEventListener('click', () => fileInput.click());
+
+$('btn-attach').addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', e => {
   if (e.target.files.length > 0) handleFilesSelected(e.target.files);
   fileInput.value = '';
 });
+
+// Chat sending
+$('btn-send-chat').addEventListener('click', sendChatMessage);
+chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChatMessage(); });
+
+function sendChatMessage() {
+  const text = chatInput.value.trim();
+  if (!text) return;
+  chatInput.value = '';
+
+  const msg = { type: 'chat', text, senderId: MY_ID, time: Date.now() };
+  if (role === 'host') {
+    chatHistory.push(msg);
+    addChatToFeed(msg);
+    broadcast(msg);
+  } else {
+    addChatToFeed(msg); // Show locally
+    hostConn.send(msg); // Send to host
+  }
+}
 
 // ── PeerJS Setup ─────────────────────────────────────────────────────────────
 function initPeer(isCreatingHost, targetHostId) {
@@ -179,12 +203,18 @@ function setupHostControlConnection(conn) {
     // Send current room state to new guest
     conn.send({
       type: 'room_state',
-      files: Array.from(allKnownFiles.values())
+      files: Array.from(allKnownFiles.values()),
+      chat: chatHistory
     });
   });
 
   conn.on('data', data => {
-    if (data.type === 'announce') {
+    if (data.type === 'chat') {
+      chatHistory.push(data);
+      addChatToFeed(data);
+      broadcast(data, conn.peer);
+    }
+    else if (data.type === 'announce') {
       // Save it locally
       allKnownFiles.set(data.file.id, data.file);
       addFileToFeed(data.file);
@@ -246,6 +276,10 @@ function connectToHost(hostId) {
         allKnownFiles.set(f.id, f);
         addFileToFeed(f);
       });
+      if (data.chat) data.chat.forEach(addChatToFeed);
+    }
+    else if (data.type === 'chat') {
+      addChatToFeed(data);
     }
     else if (data.type === 'announce') {
       allKnownFiles.set(data.file.id, data.file);
@@ -350,6 +384,38 @@ function addFileToFeed(fileMeta) {
   }
 }
 
+// ── Chat UI ──────────────────────────────────────────────────────────────────
+function addChatToFeed(msg) {
+  hide('empty-feed-msg');
+  const feed = $('file-feed');
+  const isMine = msg.senderId === MY_ID;
+
+  const div = document.createElement('div');
+  div.style.display = 'flex';
+  div.style.flexDirection = 'column';
+  div.style.alignItems = isMine ? 'flex-end' : 'flex-start';
+  div.style.marginBottom = '6px';
+
+  const timeStr = new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  
+  const inner = `
+    <span style="font-size: 0.7rem; color: rgba(255,255,255,0.3); margin-bottom: 4px; padding: 0 4px;">
+      ${isMine ? 'You' : msg.senderId} · ${timeStr}
+    </span>
+    <div style="background: ${isMine ? 'linear-gradient(135deg, #7c3aed, #0d9488)' : 'rgba(255,255,255,0.07)'}; 
+                color: #fff; padding: 10px 14px; border-radius: 14px; 
+                ${isMine ? 'border-top-right-radius: 4px;' : 'border-top-left-radius: 4px;'} 
+                max-width: 85%; word-wrap: break-word; font-size: 0.95rem; line-height: 1.4;">
+      ${msg.text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+    </div>
+  `;
+  div.innerHTML = inner;
+  
+  // Append chat (unlike files which are prepended)
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+}
+
 // ── Direct File Transfer (Sender Side) ───────────────────────────────────────
 function initiateFileTransfer(targetPeerId, fileId) {
   const file = mySharedFiles.get(fileId);
@@ -370,6 +436,12 @@ function initiateFileTransfer(targetPeerId, fileId) {
         setTimeout(() => xferConn.close(), 500);
         return;
       }
+
+      // Check buffer to prevent WebRTC overflow (pause if > 8MB buffered)
+      if (xferConn.dataChannel && xferConn.dataChannel.bufferedAmount > 8 * 1024 * 1024) {
+        setTimeout(sendNextChunk, 50);
+        return;
+      }
       
       const slice = file.slice(offset, offset + CHUNK_SIZE);
       const reader = new FileReader();
@@ -387,8 +459,7 @@ function initiateFileTransfer(targetPeerId, fileId) {
           if (pct === 100) setTimeout(() => { pwrap.style.display = 'none'; }, 2000);
         }
 
-        // Slight timeout prevents buffer overflow on fast local networks
-        setTimeout(sendNextChunk, 0);
+        sendNextChunk();
       };
       reader.readAsArrayBuffer(slice);
     }

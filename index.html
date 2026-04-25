@@ -75,11 +75,12 @@
 
   </div>
 
-  <!-- Drop Zone / Upload -->
-  <div class="glass-card" id="room-drop-zone" style="padding: 20px; border-radius: 16px; cursor: pointer; border: 1.5px dashed rgba(255,255,255,0.15); text-align: center; transition: all 0.2s;">
-    <p style="font-weight: 600; font-size: 1rem;">Drop files here</p>
-    <p style="font-size: 0.8rem; color: rgba(255,255,255,0.4);">or click to browse</p>
+  <!-- Chat / File Input Area -->
+  <div class="glass-card" style="padding: 12px; border-radius: 16px; display: flex; gap: 10px; align-items: center;">
+    <button id="btn-attach" class="btn-ghost-sm" style="font-size: 1.4rem; padding: 6px 14px; border: none;" title="Send File" aria-label="Attach File">📎</button>
     <input id="room-file-input" type="file" hidden multiple />
+    <input id="chat-input" type="text" class="glass-input" placeholder="Type a message or drop a file anywhere..." style="flex: 1; font-size: 0.95rem; padding: 12px 16px; border: none; background: rgba(255,255,255,0.03);" autocomplete="off" />
+    <button id="btn-send-chat" class="btn-primary" style="padding: 10px 20px;">Send</button>
   </div>
 
 </main>
