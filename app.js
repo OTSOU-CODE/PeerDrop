@@ -234,6 +234,17 @@ function startSender() {
     sendingState.hidden  = true;
     sendDoneState.hidden = true;
   });
+
+  // ── Switch to Receive Mode ───────────────────────────────────────────────────
+  const goReceiveBtn = $('go-to-receive-btn');
+  if (goReceiveBtn) {
+    goReceiveBtn.addEventListener('click', () => {
+      // Clean up sender peer
+      if (peer) peer.destroy();
+      hide('sender-view');
+      startReceiver();
+    });
+  }
 }
 
 // ═════════════════════════ RECEIVER ══════════════════════════════════════════
@@ -316,10 +327,10 @@ function startReceiver() {
       if (!conn.open) {
         clearInterval(speedTimer);
         hide('recv-connecting');
-        $('recv-error-msg').textContent = 'Could not connect. Is the sender online with that code?';
+        $('recv-error-msg').textContent = 'Could not connect. Make sure the sender is still on the page.';
         show('recv-error-state');
       }
-    }, 12000);
+    }, 25000);
 
     conn.on('open', () => {
       clearTimeout(timeout);
