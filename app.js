@@ -769,13 +769,6 @@ function addFileToFeed(fileMeta) {
       
       ${fileMeta.thumbnail ? `<div style="margin-top:10px; border-radius:8px; overflow:hidden; border:1px solid rgba(59,130,246,0.2);"><img src="${fileMeta.thumbnail}" style="max-width:100%; display:block;" /></div>` : ''}
       
-      <!-- Progress Bar (Hidden by default) -->
-      <div id="prog-wrap-${fileMeta.id}" style="display:none; margin-top:8px;">
-        <div class="progress-track">
-          <div id="prog-fill-${fileMeta.id}" class="progress-fill"></div>
-        </div>
-        <p style="font-size:0.7rem; color:#a855f7; margin-top:4px;" id="prog-txt-${fileMeta.id}">0%</p>
-      </div>
       <!-- Progress Bar (shown during active download) -->
       <div id="prog-wrap-${fileMeta.id}" style="display:none; margin-top:10px;">
         <div class="progress-track">
