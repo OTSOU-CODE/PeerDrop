@@ -10,11 +10,35 @@ const CHUNK_SIZE = 64 * 1024;
 const $ = id => document.getElementById(id);
 const show = id => { const e = $(id); if (e) { e.hidden = false; e.style.display = ''; } };
 const hide = id => { const e = $(id); if (e) e.hidden = true; };
+const triggerInputShake = inputElement => {
+  if (!inputElement) return;
+  inputElement.classList.remove('error-shake');
+  void inputElement.offsetWidth;
+  inputElement.classList.add('error-shake');
+};
+const escapeHTML = str => {
+  if (str == null) return '';
+  return String(str).replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+};
 const fmt = b => {
   if (!b) return '0 B';
   const k = 1024, u = ['B','KB','MB','GB'];
   const i = Math.floor(Math.log(b) / Math.log(k));
   return (b / Math.pow(k, i)).toFixed(2) + ' ' + u[i];
+};
+const fmtSpeed = bps => {
+  if (bps > 1024 * 1024) return (bps / (1024 * 1024)).toFixed(1) + ' MB/s';
+  if (bps > 1024) return (bps / 1024).toFixed(0) + ' KB/s';
+  return bps + ' B/s';
+};
+const fmtEta = secs => {
+  if (!isFinite(secs) || secs > 3600) return '';
+  if (secs >= 60) return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s left`;
+  return `${Math.round(secs)}s left`;
 };
 const mimeEmoji = t => {
   if (!t) return '📁';
@@ -31,7 +55,8 @@ function showToast(message, type = 'info') {
   if (!container) return;
   const t = document.createElement('div');
   t.className = `toast ${type}`;
-  t.innerHTML = `<span style="font-size:1.2rem">${type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️'}</span> <div>${message}</div>`;
+  t.innerHTML = `<span style="font-size:1.2rem">${type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️'}</span> <div></div>`;
+  t.lastElementChild.textContent = message;
   container.appendChild(t);
   setTimeout(() => t.classList.add('show'), 10);
   setTimeout(() => {
@@ -45,15 +70,19 @@ function updatePulse(state) {
   if (!pcd) return;
   if (state === 'connecting') pcd.innerHTML = '<span class="status-pulse connecting"></span>Connecting...';
   else if (state === 'offline') pcd.innerHTML = '<span class="status-pulse offline"></span>Offline';
-  else pcd.innerHTML = `<span class="status-pulse"></span>${state}`;
+  else { pcd.innerHTML = '<span class="status-pulse"></span>'; pcd.appendChild(document.createTextNode(state)); }
 }
 
+const avatarCache = new Map();
 function getAvatarParams(id) {
+  if (avatarCache.has(id)) return avatarCache.get(id);
   let hash = 0;
   for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
   const hue1 = Math.abs(hash) % 360;
   const hue2 = (Math.abs(hash) * 2) % 360;
-  return { letter: id.charAt(0).toUpperCase(), bg: `linear-gradient(135deg, hsl(${hue1}, 80%, 60%), hsl(${hue2}, 80%, 40%))` };
+  const params = { letter: id.charAt(0).toUpperCase(), bg: `linear-gradient(135deg, hsl(${hue1}, 80%, 60%), hsl(${hue2}, 80%, 40%))` };
+  avatarCache.set(id, params);
+  return params;
 }
 
 // ── Audio Synthesizer ────────────────────────────────────────────────────────
@@ -239,9 +268,7 @@ function validateName() {
   if (inputName) {
     const val = inputName.value.trim();
     if (!val) {
-      inputName.classList.remove('error-shake');
-      void inputName.offsetWidth;
-      inputName.classList.add('error-shake');
+      triggerInputShake(inputName);
       showToast("Please enter your display name.", "error");
       playSound('error');
       return false;
@@ -338,9 +365,7 @@ function handleTyping() {
 function sendChatMessage() {
   const text = chatInput.value.trim();
   if (!text) {
-    chatInput.classList.remove('error-shake');
-    void chatInput.offsetWidth;
-    chatInput.classList.add('error-shake');
+    triggerInputShake(chatInput);
     playSound('error');
     return;
   }
@@ -538,7 +563,7 @@ function setupHostControlConnection(conn) {
         members: Array.from(roomMembers.entries()).map(([id, val]) => ({id, name: val.name}))
       });
       
-      showToast(`${data.name} joined the room.`, "info");
+      showToast(`${sanitizeHTML(data.name)} joined the room.`, "info");
       playSound('chime');
     }
     else if (data.type === 'chat') {
@@ -604,7 +629,7 @@ function setupHostControlConnection(conn) {
       roomMembers.delete(conn.peer);
       broadcast({ type: 'member_left', id: conn.peer });
       renderUserList();
-      showToast(`${leftMem.name} left the room.`, "info");
+      showToast(`${sanitizeHTML(leftMem.name)} left the room.`, "info");
     }
     updateParticipantCount();
   });
@@ -650,13 +675,13 @@ function connectToHost(hostId) {
       roomMembers.set(data.member.id, { name: data.member.name });
       renderUserList();
       if (data.member.id !== MY_ID) {
-        showToast(`${data.member.name} joined the room.`, "info");
+        showToast(`${sanitizeHTML(data.member.name)} joined the room.`, "info");
         playSound('pop');
       }
     }
     else if (data.type === 'member_left') {
       const mem = roomMembers.get(data.id);
-      if (mem) showToast(`${mem.name} left the room.`, "info");
+      if (mem) showToast(`${sanitizeHTML(mem.name)} left the room.`, "info");
       roomMembers.delete(data.id);
       renderUserList();
     }
@@ -761,10 +786,20 @@ function addFileToFeed(fileMeta) {
   div.style.background = isMine ? 'rgba(59,130,246,0.1)' : 'rgba(255,255,255,0.04)';
   div.style.border = isMine ? '1px solid rgba(59,130,246,0.3)' : '1px solid rgba(255,255,255,0.07)';
 
-  const inner = `
+  div.innerHTML = getFileChipHTML(fileMeta, isMine, av);
+
+  const context = { peer, role, guestConns, hostConn };
+  attachFileChipEvents(div, fileMeta, isMine, context);
+
+  // Prepend so newest is at the top
+  feed.insertBefore(div, feed.firstChild);
+}
+
+function getFileChipHTML(fileMeta, isMine, av) {
+  return `
     <div class="avatar" style="background: ${av.bg}">${av.letter}</div>
     <div class="file-chip-info">
-      <p class="file-chip-name">${fileMeta.name}</p>
+      <p class="file-chip-name">${escapeHTML(fileMeta.name)}</p>
       <p class="file-chip-size">${fmt(fileMeta.size)} ${isMine ? '· Shared by you' : ''}</p>
       
       ${fileMeta.thumbnail ? `<div style="margin-top:10px; border-radius:8px; overflow:hidden; border:1px solid rgba(59,130,246,0.2);"><img src="${fileMeta.thumbnail}" style="max-width:100%; display:block;" /></div>` : ''}
@@ -792,65 +827,64 @@ function addFileToFeed(fileMeta) {
       </div>
     </div>
   `;
+}
 
-  div.innerHTML = inner;
-  
-  // Prepend so newest is at the top
-  feed.insertBefore(div, feed.firstChild);
+function attachFileChipEvents(div, fileMeta, isMine, context) {
+  if (isMine) return;
 
-  if (!isMine) {
-    const btnStream = div.querySelector(`#btn-stream-${fileMeta.id}`);
-    if (btnStream) {
-      btnStream.addEventListener('click', () => {
-        btnStream.disabled = true;
-        btnStream.textContent = 'Buffering...';
-        setTimeout(() => { btnStream.disabled = false; btnStream.textContent = '▶ Stream'; }, 5000);
-        
-        const msg = { type: 'request_stream', fileId: fileMeta.id, requesterId: peer.id };
-        if (role === 'host') {
-          const ownerConn = guestConns.get(fileMeta.ownerId);
-          if (ownerConn) ownerConn.send({ type: 'peer_wants_stream', fileId: fileMeta.id, requesterId: peer.id });
-        } else {
-          hostConn.send(msg);
+  const { peer, role, guestConns, hostConn } = context;
+
+  const btnStream = div.querySelector(`#btn-stream-${fileMeta.id}`);
+  if (btnStream) {
+    btnStream.addEventListener('click', () => {
+      btnStream.disabled = true;
+      btnStream.textContent = 'Buffering...';
+      setTimeout(() => { btnStream.disabled = false; btnStream.textContent = '▶ Stream'; }, 5000);
+
+      const msg = { type: 'request_stream', fileId: fileMeta.id, requesterId: peer.id };
+      if (role === 'host') {
+        const ownerConn = guestConns.get(fileMeta.ownerId);
+        if (ownerConn) ownerConn.send({ type: 'peer_wants_stream', fileId: fileMeta.id, requesterId: peer.id });
+      } else {
+        hostConn.send(msg);
+      }
+    });
+  }
+
+  const btn = div.querySelector(`#btn-dl-${fileMeta.id}`);
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+
+      // ── File System Access API: write chunks directly to disk as they arrive
+      if ('showSaveFilePicker' in window) {
+        try {
+          const fileHandle = await window.showSaveFilePicker({
+            suggestedName: fileMeta.name
+            // No strict types — letting the OS infer from the filename extension
+          });
+          const writable = await fileHandle.createWritable();
+          fileWritableStreams.set(fileMeta.id, writable);
+          btn.textContent = 'Starting…';
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = '↓ Download';
+          if (err.name !== 'AbortError') showToast('Could not open save dialog.', 'error');
+          return;
         }
-      });
-    }
+      } else {
+        btn.textContent = 'Requesting…';
+      }
 
-    const btn = div.querySelector(`#btn-dl-${fileMeta.id}`);
-    if (btn) {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-
-        // ── File System Access API: write chunks directly to disk as they arrive
-        if ('showSaveFilePicker' in window) {
-          try {
-            const fileHandle = await window.showSaveFilePicker({
-              suggestedName: fileMeta.name
-              // No strict types — letting the OS infer from the filename extension
-            });
-            const writable = await fileHandle.createWritable();
-            fileWritableStreams.set(fileMeta.id, writable);
-            btn.textContent = 'Starting…';
-          } catch (err) {
-            btn.disabled = false;
-            btn.textContent = '↓ Download';
-            if (err.name !== 'AbortError') showToast('Could not open save dialog.', 'error');
-            return;
-          }
-        } else {
-          btn.textContent = 'Requesting…';
-        }
-
-        // Request the file from the network
-        const msg = { type: 'request_download', fileId: fileMeta.id, requesterId: peer.id };
-        if (role === 'host') {
-          const ownerConn = guestConns.get(fileMeta.ownerId);
-          if (ownerConn) ownerConn.send({ type: 'peer_wants_file', fileId: fileMeta.id, requesterId: peer.id });
-        } else {
-          hostConn.send(msg);
-        }
-      });
-    }
+      // Request the file from the network
+      const msg = { type: 'request_download', fileId: fileMeta.id, requesterId: peer.id };
+      if (role === 'host') {
+        const ownerConn = guestConns.get(fileMeta.ownerId);
+        if (ownerConn) ownerConn.send({ type: 'peer_wants_file', fileId: fileMeta.id, requesterId: peer.id });
+      } else {
+        hostConn.send(msg);
+      }
+    });
   }
 }
 
@@ -863,7 +897,7 @@ function showTypingIndicator(id) {
 }
 
 function parseMarkdown(text) {
-  let h = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let h = sanitizeHTML(text);
   // Links
   h = h.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" style="color:var(--accent);text-decoration:underline;">$1</a>');
   // Bold
@@ -887,7 +921,7 @@ function addChatToFeed(msg) {
   const av = getAvatarParams(displayName);
 
   if (!isMine) {
-    notify(`New message from ${displayName}`, msg.text);
+    notify(`New message from ${sanitizeHTML(displayName)}`, msg.text);
     playSound('pop');
   }
 
@@ -904,7 +938,7 @@ function addChatToFeed(msg) {
     <div class="avatar" style="background: ${av.bg}; width: 28px; height: 28px; font-size: 0.6rem;">${av.letter}</div>
     <div style="display:flex; flex-direction:column; align-items:${isMine ? 'flex-end' : 'flex-start'}; max-width:80%;">
       <span style="font-size: 0.65rem; color: rgba(255,255,255,0.3); margin-bottom: 4px; padding: 0 4px;">
-        ${isMine ? 'You' : displayName} · ${timeStr}
+        ${isMine ? 'You' : sanitizeHTML(displayName)} · ${timeStr}
       </span>
       <div style="background: ${isMine ? 'var(--accent)' : 'rgba(255,255,255,0.07)'}; 
                   color: #fff; padding: 10px 14px; border-radius: 14px; 
@@ -934,6 +968,7 @@ function initiateFileTransfer(targetPeerId, fileId) {
 
   xferConn.on('open', () => {
     let offset = 0;
+    const btn = $(`btn-ul-${fileId}`);
     
     function sendNextChunk() {
       if (offset >= file.size) {
@@ -956,7 +991,6 @@ function initiateFileTransfer(targetPeerId, fileId) {
         
         // Update UI progress for uploader
         const pct = Math.round(offset / file.size * 100);
-        const btn = $(`btn-ul-${fileId}`);
         if (btn) {
           if (!btn.classList.contains('downloading') && pct < 100) {
             btn.classList.add('downloading');
@@ -1059,20 +1093,27 @@ function handleIncomingFileTransfer(conn, fileId) {
     return `${Math.round(secs)}s left`;
   };
 
+  let lastUIUpdate = 0;
+
   conn.on('data', data => {
     receivedBytes += data.byteLength;
 
-    const pct      = Math.round(receivedBytes / fileMeta.size * 100);
-    const elapsed  = (Date.now() - startTime) / 1000;
-    const speedBps = elapsed > 0 ? receivedBytes / elapsed : 0;
-    const etaSecs  = speedBps > 0 ? (fileMeta.size - receivedBytes) / speedBps : Infinity;
+    const now = Date.now();
 
-    // Update progress bar
-    if (progFill) progFill.style.width = pct + '%';
-    if (progPct)  progPct.textContent  = pct + '%';
-    if (progSpd)  progSpd.textContent  = fmtSpeed(speedBps);
-    if (progEta)  progEta.textContent  = fmtEta(etaSecs);
-    if (btn) btn.textContent = `${pct}%`;
+    if (now - lastUIUpdate > 50) {
+      lastUIUpdate = now;
+      const pct      = Math.round(receivedBytes / fileMeta.size * 100);
+      const elapsed  = (now - startTime) / 1000;
+      const speedBps = elapsed > 0 ? receivedBytes / elapsed : 0;
+      const etaSecs  = speedBps > 0 ? (fileMeta.size - receivedBytes) / speedBps : Infinity;
+
+      // Update progress bar
+      if (progFill) progFill.style.width = pct + '%';
+      if (progPct)  progPct.textContent  = pct + '%';
+      if (progSpd)  progSpd.textContent  = fmtSpeed(speedBps);
+      if (progEta)  progEta.textContent  = fmtEta(etaSecs);
+      if (btn) btn.textContent = `${pct}%`;
+    }
 
     if (writableStream) {
       writeChain = writeChain.then(() => writableStream.write(data));
@@ -1082,10 +1123,13 @@ function handleIncomingFileTransfer(conn, fileId) {
 
     if (receivedBytes >= fileMeta.size) {
       // ─ Finalize ─
+      const elapsedFinal = (Date.now() - startTime) / 1000;
+      const finalSpeedBps = elapsedFinal > 0 ? receivedBytes / elapsedFinal : 0;
+
       const finishUI = () => {
         if (progFill) progFill.style.width = '100%';
         if (progPct)  progPct.textContent  = '100%';
-        if (progSpd)  progSpd.textContent  = fmtSpeed(speedBps);
+        if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
         if (progEta)  progEta.textContent  = 'Done!';
         if (btn) {
           btn.textContent = '✅ Saved';
@@ -1103,7 +1147,7 @@ function handleIncomingFileTransfer(conn, fileId) {
           writableStream.close();
           fileWritableStreams.delete(fileId);
           finishUI();
-          showToast(`✅ ${fileMeta.name} saved to disk!`, 'success');
+          showToast(`✅ ${sanitizeHTML(fileMeta.name)} saved to disk!`, 'success');
         }).catch(() => showToast('Error writing file.', 'error'));
       } else {
         finishUI();
@@ -1155,7 +1199,7 @@ function renderUserList() {
     div.innerHTML = `
       <div class="avatar" style="background: ${av.bg}; width: 30px; height: 30px; font-size: 0.75rem;">${av.letter}</div>
       <div style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-        <span style="font-weight: 600; font-size: 0.9rem;">${data.name}</span>
+        <span style="font-weight: 600; font-size: 0.9rem;">${sanitizeHTML(data.name)}</span>
         ${isMe ? '<span style="font-size: 0.7rem; color: var(--accent); margin-left: 5px;">(You)</span>' : ''}
         ${role === 'host' && id === MY_ID ? '<span style="font-size: 0.7rem; color: #10b981; margin-left: 5px;">(Host)</span>' : ''}
       </div>
