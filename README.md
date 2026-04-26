@@ -15,7 +15,7 @@ A real-time peer-to-peer file sharing, video streaming, and chat platform that r
 [![WebRTC](https://img.shields.io/badge/Powered%20By-WebRTC-orange)](https://webrtc.org/)
 [![PeerJS](https://img.shields.io/badge/Signaling-PeerJS%201.5-blueviolet)](https://peerjs.com/)
 
-[**→ Open PeerDrop**](https://electro-rimo.github.io/PeerDrop) · [Report a Bug](https://github.com/ELECTRO-RIMO/PeerDrop/issues) · [Request Feature](https://github.com/ELECTRO-RIMO/PeerDrop/issues)
+[**→ Open PeerDrop**](https://otsou-code.github.io/PeerDrop) · [Report a Bug](https://github.com/OTSOU-CODE/PeerDrop/issues) · [Request Feature](https://github.com/OTSOU-CODE/PeerDrop/issues)
 
 </div>
 
@@ -224,7 +224,7 @@ const PEER_CONFIG = {
 
 Contributions, bug reports, and feature suggestions are welcome!
 
-1. Fork the repository
+1. Fork the repository: [github.com/OTSOU-CODE/PeerDrop](https://github.com/OTSOU-CODE/PeerDrop)
 2. Create your feature branch: `git checkout -b feature/your-feature-name`
 3. Commit your changes: `git commit -m 'feat: add awesome feature'`
 4. Push to the branch: `git push origin feature/your-feature-name`
@@ -242,6 +242,6 @@ Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for more informa
 
 Built with ☕ and vanilla code. No frameworks were harmed in the making of this project.
 
-**[⬡ PeerDrop](https://electro-rimo.github.io/PeerDrop)**
+**[⬡ PeerDrop](https://otsou-code.github.io/PeerDrop)**
 
 </div>
