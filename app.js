@@ -142,6 +142,10 @@ let mySharedFiles = new Map(); // fileId -> File object
 let allKnownFiles = new Map(); // fileId -> { id, name, size, mime, ownerId }
 let chatHistory = []; // Array of { type: 'chat', text, senderId, time }
 
+// Streaming download: maps fileId -> FileSystemWritableFileStream
+// When File System Access API is available, we write each chunk directly to disk.
+const fileWritableStreams = new Map();
+
 let localStream = null;
 let activeCalls = new Map();
 let typingTimer = null;
@@ -810,18 +814,37 @@ function addFileToFeed(fileMeta) {
 
     const btn = div.querySelector(`#btn-dl-${fileMeta.id}`);
     if (btn) {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         btn.disabled = true;
-        btn.textContent = 'Requesting...';
-        
-        // Tell the host we want this file
+
+        // ── File System Access API: write chunks directly to disk as they arrive
+        if ('showSaveFilePicker' in window) {
+          try {
+            const ext = fileMeta.name.includes('.') ? fileMeta.name.split('.').pop() : '';
+            const fileHandle = await window.showSaveFilePicker({
+              suggestedName: fileMeta.name,
+              types: [{ description: 'File', accept: { [fileMeta.mime || 'application/octet-stream']: ext ? [`.${ext}`] : [] } }]
+            });
+            const writable = await fileHandle.createWritable();
+            fileWritableStreams.set(fileMeta.id, writable);
+            btn.textContent = 'Starting...';
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = '↓ Download';
+            if (err.name !== 'AbortError') showToast('Could not open save dialog.', 'error');
+            return;
+          }
+        } else {
+          // Fallback: will buffer in memory as before
+          btn.textContent = 'Requesting...';
+        }
+
+        // Request the file from the network
         const msg = { type: 'request_download', fileId: fileMeta.id, requesterId: peer.id };
         if (role === 'host') {
-          // We are host, ask the guest directly
           const ownerConn = guestConns.get(fileMeta.ownerId);
           if (ownerConn) ownerConn.send({ type: 'peer_wants_file', fileId: fileMeta.id, requesterId: peer.id });
         } else {
-          // Ask host to relay
           hostConn.send(msg);
         }
       });
@@ -999,48 +1022,92 @@ function handleIncomingFileTransfer(conn, fileId) {
 
   const btn = $(`btn-dl-${fileId}`);
 
-  let chunks = [];
+  // Check if we have a streaming writable (File System Access API path)
+  const writableStream = fileWritableStreams.get(fileId) || null;
+  
+  // For streaming writes, chain promises so disk writes are sequential
+  let writeChain = Promise.resolve();
+  
+  // Fallback: in-memory chunks array
+  let chunks = writableStream ? null : [];
   let receivedBytes = 0;
 
+  if (btn) {
+    btn.classList.add('downloading');
+    btn.textContent = '';
+    btn.style.borderColor = 'transparent';
+  }
+
   conn.on('data', data => {
-    chunks.push(data);
     receivedBytes += data.byteLength;
 
     const pct = Math.round(receivedBytes / fileMeta.size * 100);
-    
     if (btn) {
       btn.setAttribute('data-pct', pct);
       btn.style.background = `conic-gradient(var(--accent) ${pct}%, transparent ${pct}%)`;
     }
 
+    if (writableStream) {
+      // ✔ Stream write: chain the write promise to guarantee sequential order
+      writeChain = writeChain.then(() => writableStream.write(data));
+    } else {
+      // Fallback: buffer in memory
+      chunks.push(data);
+    }
+
     if (receivedBytes >= fileMeta.size) {
-      // Done!
-      if (btn) {
-        btn.classList.remove('downloading');
-        btn.classList.add('done');
-        btn.innerHTML = '';
-        
+      // All chunks received — finalize
+      if (writableStream) {
+        // Wait for all pending writes, then close the stream (file is fully saved)
+        writeChain.then(() => {
+          writableStream.close();
+          fileWritableStreams.delete(fileId);
+
+          if (btn) {
+            btn.classList.remove('downloading');
+            btn.classList.add('done');
+            btn.innerHTML = '';
+            btn.style.background = '#10b981';
+          }
+          playSound('chime');
+          const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
+          window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
+          showToast(`✅ ${fileMeta.name} saved to disk!`, 'success');
+        }).catch(err => {
+          showToast('Error writing file to disk.', 'error');
+        });
+      } else {
+        // Fallback: build Blob and trigger browser download
+        if (btn) {
+          btn.classList.remove('downloading');
+          btn.classList.add('done');
+          btn.innerHTML = '';
+        }
         playSound('chime');
-        const rect = btn.getBoundingClientRect();
+        const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
         window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
+
+        const blob = new Blob(chunks, { type: fileMeta.mime || 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileMeta.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
       }
-      
-      const blob = new Blob(chunks, { type: fileMeta.mime || 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileMeta.name;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
       conn.close();
     }
   });
 
   conn.on('close', () => {
     if (receivedBytes < fileMeta.size) {
+      // Transfer was cut short — abort the stream if open
+      if (writableStream) {
+        writableStream.abort().catch(() => {});
+        fileWritableStreams.delete(fileId);
+      }
       if (btn) {
         btn.classList.remove('downloading');
         btn.textContent = 'Retry';
