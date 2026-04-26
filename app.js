@@ -776,6 +776,17 @@ function addFileToFeed(fileMeta) {
         </div>
         <p style="font-size:0.7rem; color:#a855f7; margin-top:4px;" id="prog-txt-${fileMeta.id}">0%</p>
       </div>
+      <!-- Progress Bar (shown during active download) -->
+      <div id="prog-wrap-${fileMeta.id}" style="display:none; margin-top:10px;">
+        <div class="progress-track">
+          <div id="prog-fill-${fileMeta.id}" class="progress-fill"></div>
+        </div>
+        <div class="progress-info">
+          <span id="prog-pct-${fileMeta.id}" class="progress-pct">0%</span>
+          <span id="prog-speed-${fileMeta.id}" class="progress-speed"></span>
+          <span id="prog-eta-${fileMeta.id}" class="progress-eta"></span>
+        </div>
+      </div>
       
       <div style="display: flex; gap: 8px; margin-top: 10px; flex-shrink: 0;">
         ${!isMine && fileMeta.mime && fileMeta.mime.startsWith('video/') 
@@ -820,14 +831,13 @@ function addFileToFeed(fileMeta) {
         // ── File System Access API: write chunks directly to disk as they arrive
         if ('showSaveFilePicker' in window) {
           try {
-            const ext = fileMeta.name.includes('.') ? fileMeta.name.split('.').pop() : '';
             const fileHandle = await window.showSaveFilePicker({
-              suggestedName: fileMeta.name,
-              types: [{ description: 'File', accept: { [fileMeta.mime || 'application/octet-stream']: ext ? [`.${ext}`] : [] } }]
+              suggestedName: fileMeta.name
+              // No strict types — letting the OS infer from the filename extension
             });
             const writable = await fileHandle.createWritable();
             fileWritableStreams.set(fileMeta.id, writable);
-            btn.textContent = 'Starting...';
+            btn.textContent = 'Starting…';
           } catch (err) {
             btn.disabled = false;
             btn.textContent = '↓ Download';
@@ -835,8 +845,7 @@ function addFileToFeed(fileMeta) {
             return;
           }
         } else {
-          // Fallback: will buffer in memory as before
-          btn.textContent = 'Requesting...';
+          btn.textContent = 'Requesting…';
         }
 
         // Request the file from the network
@@ -1020,76 +1029,94 @@ function handleIncomingFileTransfer(conn, fileId) {
   const fileMeta = allKnownFiles.get(fileId);
   if (!fileMeta) { conn.close(); return; }
 
-  const btn = $(`btn-dl-${fileId}`);
+  const btn      = $(`btn-dl-${fileId}`);
+  const progWrap = $(`prog-wrap-${fileId}`);
+  const progFill = $(`prog-fill-${fileId}`);
+  const progPct  = $(`prog-pct-${fileId}`);
+  const progSpd  = $(`prog-speed-${fileId}`);
+  const progEta  = $(`prog-eta-${fileId}`);
 
   // Check if we have a streaming writable (File System Access API path)
   const writableStream = fileWritableStreams.get(fileId) || null;
-  
-  // For streaming writes, chain promises so disk writes are sequential
+
+  // Sequential write chain for streaming path
   let writeChain = Promise.resolve();
-  
-  // Fallback: in-memory chunks array
+
+  // In-memory fallback
   let chunks = writableStream ? null : [];
   let receivedBytes = 0;
+  const startTime = Date.now();
 
+  // ─ Show progress UI ─
   if (btn) {
+    btn.textContent = 'Downloading…';
     btn.classList.add('downloading');
-    btn.textContent = '';
-    btn.style.borderColor = 'transparent';
+    btn.disabled = true;
   }
+  if (progWrap) progWrap.style.display = 'block';
+
+  const fmtSpeed = bps => {
+    if (bps > 1024 * 1024) return (bps / (1024 * 1024)).toFixed(1) + ' MB/s';
+    if (bps > 1024) return (bps / 1024).toFixed(0) + ' KB/s';
+    return bps + ' B/s';
+  };
+  const fmtEta = secs => {
+    if (!isFinite(secs) || secs > 3600) return '';
+    if (secs >= 60) return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s left`;
+    return `${Math.round(secs)}s left`;
+  };
 
   conn.on('data', data => {
     receivedBytes += data.byteLength;
 
-    const pct = Math.round(receivedBytes / fileMeta.size * 100);
-    if (btn) {
-      btn.setAttribute('data-pct', pct);
-      btn.style.background = `conic-gradient(var(--accent) ${pct}%, transparent ${pct}%)`;
-    }
+    const pct      = Math.round(receivedBytes / fileMeta.size * 100);
+    const elapsed  = (Date.now() - startTime) / 1000;
+    const speedBps = elapsed > 0 ? receivedBytes / elapsed : 0;
+    const etaSecs  = speedBps > 0 ? (fileMeta.size - receivedBytes) / speedBps : Infinity;
+
+    // Update progress bar
+    if (progFill) progFill.style.width = pct + '%';
+    if (progPct)  progPct.textContent  = pct + '%';
+    if (progSpd)  progSpd.textContent  = fmtSpeed(speedBps);
+    if (progEta)  progEta.textContent  = fmtEta(etaSecs);
+    if (btn) btn.textContent = `${pct}%`;
 
     if (writableStream) {
-      // ✔ Stream write: chain the write promise to guarantee sequential order
       writeChain = writeChain.then(() => writableStream.write(data));
     } else {
-      // Fallback: buffer in memory
       chunks.push(data);
     }
 
     if (receivedBytes >= fileMeta.size) {
-      // All chunks received — finalize
-      if (writableStream) {
-        // Wait for all pending writes, then close the stream (file is fully saved)
-        writeChain.then(() => {
-          writableStream.close();
-          fileWritableStreams.delete(fileId);
-
-          if (btn) {
-            btn.classList.remove('downloading');
-            btn.classList.add('done');
-            btn.innerHTML = '';
-            btn.style.background = '#10b981';
-          }
-          playSound('chime');
-          const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
-          window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
-          showToast(`✅ ${fileMeta.name} saved to disk!`, 'success');
-        }).catch(err => {
-          showToast('Error writing file to disk.', 'error');
-        });
-      } else {
-        // Fallback: build Blob and trigger browser download
+      // ─ Finalize ─
+      const finishUI = () => {
+        if (progFill) progFill.style.width = '100%';
+        if (progPct)  progPct.textContent  = '100%';
+        if (progSpd)  progSpd.textContent  = fmtSpeed(speedBps);
+        if (progEta)  progEta.textContent  = 'Done!';
         if (btn) {
+          btn.textContent = '✅ Saved';
           btn.classList.remove('downloading');
           btn.classList.add('done');
-          btn.innerHTML = '';
+          btn.disabled = false;
         }
         playSound('chime');
         const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
         window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
+      };
 
+      if (writableStream) {
+        writeChain.then(() => {
+          writableStream.close();
+          fileWritableStreams.delete(fileId);
+          finishUI();
+          showToast(`✅ ${fileMeta.name} saved to disk!`, 'success');
+        }).catch(() => showToast('Error writing file.', 'error'));
+      } else {
+        finishUI();
         const blob = new Blob(chunks, { type: fileMeta.mime || 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
         a.href = url;
         a.download = fileMeta.name;
         document.body.appendChild(a);
@@ -1103,17 +1130,16 @@ function handleIncomingFileTransfer(conn, fileId) {
 
   conn.on('close', () => {
     if (receivedBytes < fileMeta.size) {
-      // Transfer was cut short — abort the stream if open
       if (writableStream) {
         writableStream.abort().catch(() => {});
         fileWritableStreams.delete(fileId);
       }
+      if (progWrap) progWrap.style.display = 'none';
       if (btn) {
         btn.classList.remove('downloading');
         btn.textContent = 'Retry';
         btn.disabled = false;
         btn.style.background = '';
-        btn.removeAttribute('data-pct');
       }
     }
   });
