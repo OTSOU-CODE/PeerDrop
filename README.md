@@ -121,7 +121,7 @@ Because WebRTC requires a proper HTTP origin (not `file://`), you need a local s
 
 ```bash
 # Clone the repository
-git clone https://github.com/ELECTRO-RIMO/PeerDrop.git
+git clone https://github.com/OTSOU-CODE/PeerDrop.git
 cd PeerDrop
 
 # Serve with any static server, e.g. using Python:
