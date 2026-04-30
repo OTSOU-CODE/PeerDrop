@@ -4,6 +4,13 @@
  */
 'use strict';
 
+// ── Service Worker Registration ──────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(err => console.error('SW Error:', err));
+}
+// Global map to hold streaming ports for Service Worker downloads
+const activeStreams = new Map();
+
 const CHUNK_SIZE = 256 * 1024;
 
 // ── DOM Helpers ──────────────────────────────────────────────────────────────
@@ -862,26 +869,7 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
   if (btn) {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-
-      // ── File System Access API: write chunks directly to disk as they arrive
-      if ('showSaveFilePicker' in window) {
-        try {
-          const fileHandle = await window.showSaveFilePicker({
-            suggestedName: fileMeta.name
-            // No strict types — letting the OS infer from the filename extension
-          });
-          const writable = await fileHandle.createWritable();
-          fileWritableStreams.set(fileMeta.id, writable);
-          btn.textContent = 'Starting…';
-        } catch (err) {
-          btn.disabled = false;
-          btn.textContent = '↓ Download';
-          if (err.name !== 'AbortError') showToast('Could not open save dialog.', 'error');
-          return;
-        }
-      } else {
-        btn.textContent = 'Requesting…';
-      }
+      btn.textContent = 'Requesting…';
 
       // Request the file from the network
       const msg = { type: 'request_download', fileId: fileMeta.id, requesterId: peer.id };
@@ -904,10 +892,10 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
           btn.disabled = false;
           btn.textContent = '↓ Download';
           showToast('Transfer request timed out.', 'error');
-          const writable = fileWritableStreams.get(fileMeta.id);
-          if (writable) {
-            await writable.abort().catch(()=>{});
-            fileWritableStreams.delete(fileMeta.id);
+          const streamData = activeStreams.get(fileMeta.id);
+          if (streamData) {
+            streamData.port.postMessage('ABORT');
+            activeStreams.delete(fileMeta.id);
           }
         }
       }, 15000);
@@ -1108,16 +1096,48 @@ function handleIncomingFileTransfer(conn, fileId) {
   const progSpd  = $(`prog-speed-${fileId}`);
   const progEta  = $(`prog-eta-${fileId}`);
 
-  // Check if we have a streaming writable (File System Access API path)
-  const writableStream = fileWritableStreams.get(fileId) || null;
-
-  // Sequential write chain for streaming path
   let writeChain = Promise.resolve();
-
-  // In-memory fallback
-  let chunks = writableStream ? null : [];
+  let chunks = [];
   let receivedBytes = 0;
   const startTime = Date.now();
+
+  let useSW = false;
+  let swPort = null;
+
+  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+    useSW = true;
+    const mc = new MessageChannel();
+    swPort = mc.port1;
+    
+    const downloadUrl = new URL(`/--peerdrop-download--/${Math.random().toString(36).slice(2)}`, window.location.href);
+    downloadUrl.searchParams.set('filename', fileMeta.name);
+    downloadUrl.searchParams.set('size', fileMeta.size);
+    
+    navigator.serviceWorker.controller.postMessage({
+      type: 'START_DOWNLOAD',
+      url: downloadUrl.href,
+      port: mc.port2
+    }, [mc.port2]);
+
+    activeStreams.set(fileId, { port: swPort });
+
+    const iframe = document.createElement('iframe');
+    iframe.hidden = true;
+    iframe.src = downloadUrl.href;
+    document.body.appendChild(iframe);
+    
+    swPort.onmessage = e => {
+      if (e.data === 'CANCEL') {
+        conn.close();
+        showToast('Download cancelled by browser.', 'error');
+        if (btn) {
+          btn.classList.remove('downloading');
+          btn.textContent = 'Cancelled';
+          btn.disabled = false;
+        }
+      }
+    };
+  }
 
   // ─ Show progress UI ─
   if (btn) {
@@ -1128,7 +1148,6 @@ function handleIncomingFileTransfer(conn, fileId) {
   if (progWrap) progWrap.style.display = 'block';
 
   let lastUIUpdate = 0;
-
   let writeError = null;
 
   conn.on('data', data => {
@@ -1154,83 +1173,68 @@ function handleIncomingFileTransfer(conn, fileId) {
       if (btn) btn.textContent = `${pct}%`;
     }
 
-    if (writableStream) {
-      writeChain = writeChain.then(async () => {
-        const buf = (data instanceof Blob) ? await data.arrayBuffer() : data;
-        return writableStream.write(buf);
-      }).catch(err => {
-        if (!writeError) {
-          writeError = err;
-          console.error("Write chunk error:", err);
-          writableStream.abort().catch(()=>{});
-          fileWritableStreams.delete(fileId);
-          conn.close();
-          showToast("Error writing to disk. Transfer aborted.", "error");
+    writeChain = writeChain.then(async () => {
+      let buf = data;
+      if (buf instanceof Blob) buf = await buf.arrayBuffer();
+      
+      if (useSW) {
+        swPort.postMessage(new Uint8Array(buf));
+      } else {
+        chunks.push(buf);
+      }
+
+      if (receivedBytes >= fileMeta.size) {
+        const elapsedFinal = (Date.now() - startTime) / 1000;
+        const finalSpeedBps = elapsedFinal > 0 ? receivedBytes / elapsedFinal : 0;
+
+        const finishUI = () => {
+          if (progFill) progFill.style.width = '100%';
+          if (progPct)  progPct.textContent  = '100%';
+          if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
+          if (progEta)  progEta.textContent  = 'Done!';
           if (btn) {
+            btn.textContent = '✅ Saved';
             btn.classList.remove('downloading');
-            btn.textContent = 'Write Error';
+            btn.classList.add('done');
             btn.disabled = false;
           }
-        }
-      });
-    } else {
-      chunks.push(data);
-    }
+          playSound('chime');
+          const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
+          window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
+        };
 
-    if (receivedBytes >= fileMeta.size) {
-      // ─ Finalize ─
-      const elapsedFinal = (Date.now() - startTime) / 1000;
-      const finalSpeedBps = elapsedFinal > 0 ? receivedBytes / elapsedFinal : 0;
-
-      const finishUI = () => {
-        if (progFill) progFill.style.width = '100%';
-        if (progPct)  progPct.textContent  = '100%';
-        if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
-        if (progEta)  progEta.textContent  = 'Done!';
-        if (btn) {
-          btn.textContent = '✅ Saved';
-          btn.classList.remove('downloading');
-          btn.classList.add('done');
-          btn.disabled = false;
-        }
-        playSound('chime');
-        const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
-        window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
-      };
-
-      if (writableStream) {
-        writeChain.then(() => {
-          writableStream.close();
-          fileWritableStreams.delete(fileId);
+        if (useSW) {
+          swPort.postMessage('DONE');
+          swPort.close();
+          activeStreams.delete(fileId);
           finishUI();
           showToast(`✅ ${escapeHTML(fileMeta.name)} saved to disk!`, 'success');
-        }).catch(() => showToast('Error writing file.', 'error'));
-      } else {
-        finishUI();
-        const blob = new Blob(chunks, { type: fileMeta.mime || 'application/octet-stream' });
-        const url  = URL.createObjectURL(blob);
-        const a    = document.createElement('a');
-        a.href = url;
-        a.download = fileMeta.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        } else {
+          finishUI();
+          const blob = new Blob(chunks);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileMeta.name;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          showToast(`✅ ${escapeHTML(fileMeta.name)} saved!`, 'success');
+        }
       }
+    }).catch(err => {
+      writeError = err;
+      if (useSW && swPort) swPort.postMessage('ABORT');
       conn.close();
-    }
+    });
   });
 
   conn.on('close', () => {
     if (receivedBytes < fileMeta.size) {
-      if (writableStream) {
-        writableStream.abort().catch(() => {});
-        fileWritableStreams.delete(fileId);
-      }
+      if (useSW && swPort) swPort.postMessage('ABORT');
       if (progWrap) progWrap.style.display = 'none';
-      if (btn) {
+      if (btn && btn.textContent !== 'Cancelled') {
         btn.classList.remove('downloading');
-        btn.textContent = 'Retry';
+        btn.textContent = 'Failed';
         btn.disabled = false;
         btn.style.background = '';
       }
