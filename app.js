@@ -136,10 +136,9 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ── State ────────────────────────────────────────────────────────────────────
-const MY_ID = Array.from(crypto.getRandomValues(new Uint8Array(6)))
-  .map(b => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
-
 const savedName = localStorage.getItem('peerdrop_name');
+let MY_ID = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+  .map(b => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
 let MY_NAME = savedName || 'Guest_' + Math.floor(Math.random() * 1000);
 
 const nameInput = $('input-display-name');
@@ -155,7 +154,9 @@ const PEER_CONFIG = {
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
     ]
   }
 };
@@ -375,11 +376,11 @@ function sendChatMessage() {
   const msg = { type: 'chat', text, senderId: MY_ID, senderName: MY_NAME, time: Date.now() };
   if (role === 'host') {
     chatHistory.push(msg);
+    if (chatHistory.length > 100) chatHistory.shift();
     addChatToFeed(msg);
     broadcast(msg);
   } else {
     if (hostConn && hostConn.open) {
-      chatInput.value = '';
       addChatToFeed(msg); // Show locally
       hostConn.send(msg); // Send to host
     } else {
@@ -484,6 +485,7 @@ function initPeer(isCreatingHost, targetHostId) {
   peer = new Peer(isCreatingHost ? MY_ID : null, PEER_CONFIG);
 
   peer.on('open', id => {
+    MY_ID = id;
     hide('home-view');
     show('room-view');
     
@@ -568,6 +570,7 @@ function setupHostControlConnection(conn) {
     }
     else if (data.type === 'chat') {
       chatHistory.push(data);
+      if (chatHistory.length > 100) chatHistory.shift();
       addChatToFeed(data);
       broadcast(data, conn.peer);
     }
@@ -675,13 +678,13 @@ function connectToHost(hostId) {
       roomMembers.set(data.member.id, { name: data.member.name });
       renderUserList();
       if (data.member.id !== MY_ID) {
-        showToast(`${sanitizeHTML(data.member.name)} joined the room.`, "info");
+        showToast(`${escapeHTML(data.member.name)} joined the room.`, "info");
         playSound('pop');
       }
     }
     else if (data.type === 'member_left') {
       const mem = roomMembers.get(data.id);
-      if (mem) showToast(`${sanitizeHTML(mem.name)} left the room.`, "info");
+      if (mem) showToast(`${escapeHTML(mem.name)} left the room.`, "info");
       roomMembers.delete(data.id);
       renderUserList();
     }
@@ -891,13 +894,14 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
 // ── Chat UI ──────────────────────────────────────────────────────────────────
 function showTypingIndicator(id) {
   const ind = $('typing-indicator');
-  ind.textContent = `${id} is typing...`;
+  const name = roomMembers.get(id)?.name || id;
+  ind.textContent = `${name} is typing...`;
   clearTimeout(typingTimer);
   typingTimer = setTimeout(() => { ind.textContent = ''; }, 2000);
 }
 
 function parseMarkdown(text) {
-  let h = sanitizeHTML(text);
+  let h = escapeHTML(text);
   // Links
   h = h.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" style="color:var(--accent);text-decoration:underline;">$1</a>');
   // Bold
@@ -918,10 +922,10 @@ function addChatToFeed(msg) {
   
   // Use senderName for UI, fallback to senderId if missing
   const displayName = msg.senderName || msg.senderId;
-  const av = getAvatarParams(displayName);
+  const av = getAvatarParams(msg.senderId);
 
   if (!isMine) {
-    notify(`New message from ${sanitizeHTML(displayName)}`, msg.text);
+    notify(`New message from ${escapeHTML(displayName)}`, msg.text);
     playSound('pop');
   }
 
@@ -938,7 +942,7 @@ function addChatToFeed(msg) {
     <div class="avatar" style="background: ${av.bg}; width: 28px; height: 28px; font-size: 0.6rem;">${av.letter}</div>
     <div style="display:flex; flex-direction:column; align-items:${isMine ? 'flex-end' : 'flex-start'}; max-width:80%;">
       <span style="font-size: 0.65rem; color: rgba(255,255,255,0.3); margin-bottom: 4px; padding: 0 4px;">
-        ${isMine ? 'You' : sanitizeHTML(displayName)} · ${timeStr}
+        ${isMine ? 'You' : escapeHTML(displayName)} · ${timeStr}
       </span>
       <div style="background: ${isMine ? 'var(--accent)' : 'rgba(255,255,255,0.07)'}; 
                   color: #fff; padding: 10px 14px; border-radius: 14px; 
@@ -966,9 +970,21 @@ function initiateFileTransfer(targetPeerId, fileId) {
     metadata: { transferFileId: fileId }
   });
 
+  xferConn.on('error', err => {
+    console.error('File transfer connection error:', err);
+    showToast('Failed to connect to receiver.', 'error');
+    const btn = $(`btn-ul-${fileId}`);
+    if (btn) { btn.classList.remove('downloading'); btn.textContent = 'Retry'; btn.disabled = false; }
+  });
+
   xferConn.on('open', () => {
     let offset = 0;
     const btn = $(`btn-ul-${fileId}`);
+    
+    if (xferConn.dataChannel) {
+      xferConn.dataChannel.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
+      xferConn.dataChannel.onbufferedamountlow = sendNextChunk;
+    }
     
     function sendNextChunk() {
       if (offset >= file.size) {
@@ -979,8 +995,7 @@ function initiateFileTransfer(targetPeerId, fileId) {
 
       // Check buffer to prevent WebRTC overflow (pause if > 8MB buffered)
       if (xferConn.dataChannel && xferConn.dataChannel.bufferedAmount > 8 * 1024 * 1024) {
-        setTimeout(sendNextChunk, 50);
-        return;
+        return; // Waits for bufferedamountlow
       }
       
       const slice = file.slice(offset, offset + CHUNK_SIZE);
@@ -994,15 +1009,12 @@ function initiateFileTransfer(targetPeerId, fileId) {
         if (btn) {
           if (!btn.classList.contains('downloading') && pct < 100) {
             btn.classList.add('downloading');
-            btn.textContent = '';
-            btn.style.borderColor = 'transparent';
           }
-          btn.setAttribute('data-pct', pct);
-          btn.style.background = `conic-gradient(#f59e0b ${pct}%, transparent ${pct}%)`;
+          btn.textContent = `${pct}%`;
           if (pct === 100) {
             btn.classList.remove('downloading');
             btn.classList.add('done');
-            btn.innerHTML = '';
+            btn.textContent = '✅';
             btn.style.background = '#10b981';
           }
         }
@@ -1033,6 +1045,9 @@ function initiateVideoStreaming(targetPeerId, fileId) {
       stream = video.captureStream();
     } else if (video.mozCaptureStream) {
       stream = video.mozCaptureStream();
+    } else {
+      showToast("Video streaming not supported in this browser.", "error");
+      return;
     }
     
     if (stream) {
@@ -1081,17 +1096,6 @@ function handleIncomingFileTransfer(conn, fileId) {
     btn.disabled = true;
   }
   if (progWrap) progWrap.style.display = 'block';
-
-  const fmtSpeed = bps => {
-    if (bps > 1024 * 1024) return (bps / (1024 * 1024)).toFixed(1) + ' MB/s';
-    if (bps > 1024) return (bps / 1024).toFixed(0) + ' KB/s';
-    return bps + ' B/s';
-  };
-  const fmtEta = secs => {
-    if (!isFinite(secs) || secs > 3600) return '';
-    if (secs >= 60) return `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s left`;
-    return `${Math.round(secs)}s left`;
-  };
 
   let lastUIUpdate = 0;
 
@@ -1147,7 +1151,7 @@ function handleIncomingFileTransfer(conn, fileId) {
           writableStream.close();
           fileWritableStreams.delete(fileId);
           finishUI();
-          showToast(`✅ ${sanitizeHTML(fileMeta.name)} saved to disk!`, 'success');
+          showToast(`✅ ${escapeHTML(fileMeta.name)} saved to disk!`, 'success');
         }).catch(() => showToast('Error writing file.', 'error'));
       } else {
         finishUI();
@@ -1199,7 +1203,7 @@ function renderUserList() {
     div.innerHTML = `
       <div class="avatar" style="background: ${av.bg}; width: 30px; height: 30px; font-size: 0.75rem;">${av.letter}</div>
       <div style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-        <span style="font-weight: 600; font-size: 0.9rem;">${sanitizeHTML(data.name)}</span>
+        <span style="font-weight: 600; font-size: 0.9rem;">${escapeHTML(data.name)}</span>
         ${isMe ? '<span style="font-size: 0.7rem; color: var(--accent); margin-left: 5px;">(You)</span>' : ''}
         ${role === 'host' && id === MY_ID ? '<span style="font-size: 0.7rem; color: #10b981; margin-left: 5px;">(Host)</span>' : ''}
       </div>
