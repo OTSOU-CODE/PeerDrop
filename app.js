@@ -4,7 +4,7 @@
  */
 'use strict';
 
-const CHUNK_SIZE = 64 * 1024;
+const CHUNK_SIZE = 256 * 1024;
 
 // ── DOM Helpers ──────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -86,9 +86,13 @@ function getAvatarParams(id) {
 }
 
 // ── Audio Synthesizer ────────────────────────────────────────────────────────
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-function playSound(type) {
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playSound(type) {
+  initAudio();
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
   osc.connect(gain);
@@ -882,11 +886,31 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
       // Request the file from the network
       const msg = { type: 'request_download', fileId: fileMeta.id, requesterId: peer.id };
       if (role === 'host') {
-        const ownerConn = guestConns.get(fileMeta.ownerId);
-        if (ownerConn) ownerConn.send({ type: 'peer_wants_file', fileId: fileMeta.id, requesterId: peer.id });
+        const file = allKnownFiles.get(fileMeta.id);
+        if (file) {
+          if (file.ownerId === MY_ID) initiateFileTransfer(peer.id, file.id);
+          else {
+            const ownerConn = guestConns.get(file.ownerId);
+            if (ownerConn) ownerConn.send({ type: 'peer_wants_file', fileId: file.id, requesterId: peer.id });
+          }
+        }
       } else {
         hostConn.send(msg);
       }
+
+      // Timeout if the transfer connection is never established
+      setTimeout(async () => {
+        if (btn.textContent === 'Requesting…' || btn.textContent === 'Starting…') {
+          btn.disabled = false;
+          btn.textContent = '↓ Download';
+          showToast('Transfer request timed out.', 'error');
+          const writable = fileWritableStreams.get(fileMeta.id);
+          if (writable) {
+            await writable.abort().catch(()=>{});
+            fileWritableStreams.delete(fileMeta.id);
+          }
+        }
+      }, 15000);
     });
   }
 }
@@ -981,12 +1005,18 @@ function initiateFileTransfer(targetPeerId, fileId) {
     let offset = 0;
     const btn = $(`btn-ul-${fileId}`);
     
+    let aborted = false;
+    xferConn.on('close', () => aborted = true);
+    xferConn.on('error', () => aborted = true);
+
     if (xferConn.dataChannel) {
       xferConn.dataChannel.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
       xferConn.dataChannel.onbufferedamountlow = sendNextChunk;
     }
     
     function sendNextChunk() {
+      if (aborted) return;
+
       if (offset >= file.size) {
         // Done
         setTimeout(() => xferConn.close(), 500);
@@ -1099,8 +1129,13 @@ function handleIncomingFileTransfer(conn, fileId) {
 
   let lastUIUpdate = 0;
 
+  let writeError = null;
+
   conn.on('data', data => {
-    receivedBytes += data.byteLength;
+    if (writeError) return;
+
+    const chunkBytes = (data instanceof Blob) ? data.size : data.byteLength;
+    receivedBytes += chunkBytes;
 
     const now = Date.now();
 
@@ -1120,7 +1155,24 @@ function handleIncomingFileTransfer(conn, fileId) {
     }
 
     if (writableStream) {
-      writeChain = writeChain.then(() => writableStream.write(data));
+      writeChain = writeChain.then(async () => {
+        const buf = (data instanceof Blob) ? await data.arrayBuffer() : data;
+        return writableStream.write(buf);
+      }).catch(err => {
+        if (!writeError) {
+          writeError = err;
+          console.error("Write chunk error:", err);
+          writableStream.abort().catch(()=>{});
+          fileWritableStreams.delete(fileId);
+          conn.close();
+          showToast("Error writing to disk. Transfer aborted.", "error");
+          if (btn) {
+            btn.classList.remove('downloading');
+            btn.textContent = 'Write Error';
+            btn.disabled = false;
+          }
+        }
+      });
     } else {
       chunks.push(data);
     }
