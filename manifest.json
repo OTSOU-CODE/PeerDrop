@@ -1,0 +1,28 @@
+{
+  "name": "PeerDrop",
+  "short_name": "PeerDrop",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#050508",
+  "theme_color": "#3b82f6",
+  "description": "Direct P2P Sharing Rooms. No servers. No limits.",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' style='stop-color:%233b82f6'/><stop offset='100%' style='stop-color:%230ea5e9'/></linearGradient></defs><polygon points='50,5 95,25 95,75 50,95 5,75 5,25' fill='url(%23g)'/><circle cx='50' cy='50' r='25' fill='%23050508'/><polygon points='50,20 75,40 75,60 50,80 25,60 25,40' fill='%233b82f6'/></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["utilities", "productivity"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Create Room",
+      "short_name": "Create",
+      "description": "Create a new sharing room",
+      "url": "./#create",
+      "icons": [{ "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2'><line x1='12' y1='5' x2='12' y2='19'/><line x1='5' y1='12' x2='19' y2='12'/></svg>", "sizes": "96x96" }]
+    }
+  ]
+}
