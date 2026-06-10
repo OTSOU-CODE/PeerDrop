@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="description" content="Direct P2P Sharing Rooms. No servers. No limits. Share files and chat securely."/>
+  <meta name="theme-color" content="#050508"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <title>PeerDrop — Sharing Room</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Playfair+Display:wght@700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet"/>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="style.css"/>
+  <style>
+    .home-section {
+      padding-bottom: 24px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .home-section:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .home-section .card-label {
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+<div id="toast-container" role="status" aria-live="polite"></div>
+<canvas id="particles" aria-hidden="true"></canvas>
+
+<main id="home-view" class="view">
+  <header class="site-header animate-enter-1">
+    <div class="logo">
+      <span class="logo-icon" aria-hidden="true">⬡</span>
+      <span class="logo-text">PeerDrop</span>
+    </div>
+  </header>
+
+  <p class="animate-enter-2" style="text-align:center;color:var(--text-dim);margin-bottom:20px;line-height:1.6">
+    Direct P2P Sharing Rooms.<br/>No servers. No limits.
+  </p>
+
+  <div class="glass-card animate-enter-3">
+    <div class="home-section">
+      <p class="card-label">YOUR DISPLAY NAME</p>
+      <input id="input-display-name" class="glass-input" type="text" placeholder="What should we call you?" autocomplete="off" style="width:100%;text-align:center;font-size:1.1rem;font-weight:600;padding:16px"/>
+    </div>
+
+    <div class="home-section">
+      <p class="card-label">START A NEW ROOM</p>
+      <button id="btn-create-room" class="btn-primary" style="width:100%;padding:16px;font-size:1.1rem">
+        + Create Room
+      </button>
+    </div>
+
+    <div class="home-section">
+      <p class="card-label">JOIN EXISTING ROOM</p>
+      <div class="code-entry-row">
+        <input id="input-join-code" class="glass-input mono code-input-big" type="text" maxlength="6" placeholder="ROOM ID" inputmode="text" autocomplete="off" aria-label="Room code"/>
+        <button id="btn-join-room" class="btn-primary">Join</button>
+      </div>
+      <p id="join-error" class="connect-err" hidden role="alert">Room not found.</p>
+    </div>
+  </div>
+</main>
+
+<main id="room-view" class="view room-layout" hidden>
+  <aside class="glass-card sidebar-card" aria-label="Room members">
+    <h3 class="card-label">ROOM MEMBERS</h3>
+    <div id="user-list" role="list"></div>
+  </aside>
+
+  <div class="main-chat-area">
+    <header class="glass-card room-header" role="banner">
+      <div class="room-header-left">
+        <span class="logo-icon" aria-hidden="true">⬡</span>
+        <div>
+          <h1 style="font-size:1.1rem;font-weight:700">Room: <span id="room-code-display" class="mono" style="color:var(--accent)">---</span></h1>
+          <p id="peer-count-display" style="font-size:0.75rem;color:var(--text-dim)"><span class="status-pulse connecting"></span>Connecting...</p>
+        </div>
+      </div>
+      <div class="room-header-right">
+        <button id="btn-copy-link" class="btn-ghost-sm">Copy Link</button>
+        <button id="btn-leave-room" class="btn-ghost-sm" style="color:#f87171;border-color:rgba(248,113,113,0.3)">Leave</button>
+      </div>
+    </header>
+
+    <div class="glass-card feed-card">
+      <h2 class="card-label">
+        <span>Room Feed</span>
+        <span id="notif-btn" tabindex="0" role="button" aria-label="Toggle desktop notifications" style="cursor:pointer;font-size:1.2rem">🔕</span>
+      </h2>
+      <div id="file-feed" role="log" aria-live="polite">
+        <div class="empty-feed" id="empty-feed-msg">
+          <span aria-hidden="true">✨</span>
+          Welcome to the room.<br/>Drop a file or paste an image below.
+        </div>
+      </div>
+    </div>
+
+    <p id="typing-indicator" style="font-size:0.75rem;color:var(--text-dim);margin-left:12px;height:16px" aria-live="polite" aria-atomic="true"></p>
+
+    <div class="glass-card chat-input-bar">
+      <button id="btn-attach" class="btn-ghost-sm" style="font-size:1.4rem;padding:6px 14px;border:none;cursor:pointer" title="Send File" aria-label="Attach File">📎</button>
+      <button id="btn-share-screen" class="btn-ghost-sm" style="font-size:1.4rem;padding:6px 14px;border:none;cursor:pointer" title="Share Screen" aria-label="Share screen">🖥️</button>
+      <input id="room-file-input" type="file" hidden multiple aria-hidden="true"/>
+      <input id="chat-input" type="text" class="glass-input" placeholder="Type a message, drop a file, or paste (CTRL+V)..." autocomplete="off" aria-label="Chat message"/>
+      <button id="btn-send-chat" class="btn-primary" style="padding:10px 24px">Send</button>
+    </div>
+  </div>
+</main>
+
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
