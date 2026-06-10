@@ -185,6 +185,7 @@ let chatHistory = []; // Array of { type: 'chat', text, senderId, time }
 let localStream = null;
 let activeCalls = new Map();
 let typingTimer = null;
+let leaveInProgress = false;
 
 // ── Background Particles ─────────────────────────────────────────────────────
 window.triggerParticleBurst = () => {};
@@ -286,15 +287,16 @@ function validateName() {
   return true;
 }
 
-$('btn-create-room').addEventListener('click', () => {
+$('btn-create-room')?.addEventListener('click', () => {
   if (validateName()) initPeer(true, MY_ID);
 });
 
-$('btn-join-room').addEventListener('click', () => {
+$('btn-join-room')?.addEventListener('click', () => {
   if (!validateName()) return;
-  const code = $('input-join-code').value.toUpperCase().trim();
-  if (code.length >= 4) {
-    $('join-error').hidden = true;
+  const code = $('input-join-code')?.value.toUpperCase().trim();
+  if (code && code.length >= 4) {
+    const joinErr = $('join-error');
+    if (joinErr) joinErr.hidden = true;
     initPeer(false, code);
   }
 });
@@ -320,7 +322,7 @@ function cleanupPeerResources() {
     localStream.getTracks().forEach(t => t.stop());
     localStream = null;
   }
-  for (const [, call] of activeCalls) call.close();
+  for (const [, call] of activeCalls) try { call.close(); } catch (_) {}
   activeCalls.clear();
   if (hostConn) { try { hostConn.close(); } catch (_) {} hostConn = null; }
   for (const [, conn] of guestConns) { try { conn.close(); } catch (_) {} }
@@ -332,10 +334,14 @@ function cleanupPeerResources() {
   allKnownFiles.clear();
   chatHistory.length = 0;
   roomMembers.clear();
+  avatarCache.clear();
+  if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
+  if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
   role = null;
+  leaveInProgress = true;
 }
 
-$('btn-leave-room').addEventListener('click', () => {
+$('btn-leave-room')?.addEventListener('click', () => {
   cleanupPeerResources();
   window.location.hash = '';
   window.location.reload();
@@ -349,12 +355,14 @@ if (window.location.protocol === 'file:') {
   document.body.appendChild(warn);
 }
 
-$('btn-copy-link').addEventListener('click', () => {
-  const url = `${location.origin}${location.pathname}#${$('room-code-display').textContent}`;
+$('btn-copy-link')?.addEventListener('click', () => {
+  const rcd = $('room-code-display');
+  if (!rcd) return;
+  const url = `${location.origin}${location.pathname}#${rcd.textContent}`;
   navigator.clipboard.writeText(url).then(() => {
-    $('btn-copy-link').textContent = 'Copied!';
-    setTimeout(() => { $('btn-copy-link').textContent = 'Copy Link'; }, 2000);
-  });
+    const bcl = $('btn-copy-link');
+    if (bcl) { bcl.textContent = 'Copied!'; setTimeout(() => { bcl.textContent = 'Copy Link'; }, 2000); }
+  }).catch(() => showToast("Failed to copy link", "error"));
 });
 
 // ── Input & Drop Zone ────────────────────────────────────────────────────────
@@ -371,26 +379,32 @@ roomView.addEventListener('drop', e => {
   if (e.dataTransfer.files.length > 0) handleFilesSelected(e.dataTransfer.files);
 });
 
-$('btn-attach').addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', e => {
-  if (e.target.files.length > 0) handleFilesSelected(e.target.files);
-  fileInput.value = '';
-});
+$('btn-attach')?.addEventListener('click', () => { if (fileInput) fileInput.click(); });
+if (fileInput) {
+  fileInput.addEventListener('change', e => {
+    if (e.target.files.length > 0) handleFilesSelected(e.target.files);
+    fileInput.value = '';
+  });
+}
 
 // Chat sending
-$('btn-send-chat').addEventListener('click', sendChatMessage);
-chatInput.addEventListener('keydown', e => { 
-  if (e.key === 'Enter') sendChatMessage(); 
-  else handleTyping();
-});
+$('btn-send-chat')?.addEventListener('click', sendChatMessage);
+if (chatInput) {
+  chatInput.addEventListener('keydown', e => { 
+    if (e.key === 'Enter') sendChatMessage(); 
+    else handleTyping();
+  });
+}
 
 function handleTyping() {
+  if (!chatInput) return;
   const msg = { type: 'typing', senderId: MY_ID };
   if (role === 'host') broadcast(msg);
   else if (hostConn && hostConn.open) hostConn.send(msg);
 }
 
 function sendChatMessage() {
+  if (!chatInput) return;
   const text = chatInput.value.trim();
   if (!text) {
     triggerInputShake(chatInput);
@@ -408,44 +422,52 @@ function sendChatMessage() {
   playSound('pop');
 
   const msg = { type: 'chat', text, senderId: MY_ID, senderName: MY_NAME, time: Date.now() };
+  chatHistory.push(msg);
+  if (chatHistory.length > 100) chatHistory.shift();
+  addChatToFeed(msg);
+
   if (role === 'host') {
-    chatHistory.push(msg);
-    if (chatHistory.length > 100) chatHistory.shift();
-    addChatToFeed(msg);
     broadcast(msg);
   } else {
-    addChatToFeed(msg);
     hostConn.send(msg);
   }
 }
 
 // ── Screen Sharing ───────────────────────────────────────────────────────────
-$('btn-share-screen').addEventListener('click', async () => {
-  if (!localStream) {
-    try {
-      localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      addVideoStream(MY_ID, localStream, true);
+const btnShareScreen = $('btn-share-screen');
+if (btnShareScreen) {
+  btnShareScreen.addEventListener('click', async () => {
+    if (!localStream) {
+      try {
+        localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        addVideoStream(MY_ID, localStream, true);
 
-      // Call everyone we know
-      if (role === 'host') {
-        for (const [guestId, _] of guestConns) {
-          const call = peer.call(guestId, localStream);
-          handleCall(call);
+        if (role === 'host') {
+          for (const [guestId] of guestConns) {
+            try {
+              const call = peer.call(guestId, localStream);
+              if (call) handleCall(call);
+            } catch (_) {}
+          }
+        } else if (hostConn && hostConn.open) {
+          try {
+            const call = peer.call(hostConn.peer, localStream);
+            if (call) handleCall(call);
+          } catch (_) {}
         }
-      } else if (hostConn && hostConn.open) {
-        const call = peer.call(hostConn.peer, localStream);
-        handleCall(call);
+        
+        localStream.getVideoTracks()[0].onended = () => stopScreenShare();
+        btnShareScreen.style.color = '#ef4444';
+      } catch (err) {
+        showToast("Screen share cancelled or failed.", "error");
       }
-      
-      localStream.getVideoTracks()[0].onended = () => stopScreenShare();
-      $('btn-share-screen').style.color = '#ef4444';
-    } catch (err) {
-      console.error("Screen share failed", err);
+    } else {
+      stopScreenShare();
     }
-  } else {
-    stopScreenShare();
-  }
-});
+  });
+} else {
+  console.warn('Screen share button not found');
+}
 
 function stopScreenShare() {
   if (localStream) {
@@ -453,9 +475,10 @@ function stopScreenShare() {
     localStream = null;
   }
   removeVideoStream(MY_ID);
-  for (const [id, call] of activeCalls) call.close();
+  for (const [, call] of activeCalls) try { call.close(); } catch (_) {}
   activeCalls.clear();
-  $('btn-share-screen').style.color = '';
+  const bss = $('btn-share-screen');
+  if (bss) bss.style.color = '';
 }
 
 function handleCall(call) {
@@ -503,31 +526,57 @@ function addVideoStream(peerId, stream, isLocal, isVideoFile = false) {
 
 function removeVideoStream(peerId) {
   const wrap = $(`video-wrap-${peerId}`);
-  if (wrap) wrap.remove();
+  if (wrap) {
+    const video = wrap.querySelector('video');
+    if (video && video.srcObject) {
+      try { video.srcObject.getTracks().forEach(t => t.stop()); } catch (_) {}
+      video.srcObject = null;
+    }
+    wrap.remove();
+  }
 }
 
 // ── PeerJS Setup ─────────────────────────────────────────────────────────────
 function initPeer(isCreatingHost, targetHostId) {
+  if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
+  leaveInProgress = false;
+
   $('btn-create-room').textContent = 'Starting...';
   $('btn-join-room').textContent = 'Joining...';
 
-  // If I am host, I use my generated MY_ID. If I am guest, I use a random internal ID.
   peer = new Peer(isCreatingHost ? MY_ID : null, PEER_CONFIG);
 
   peer.on('open', id => {
+    const oldId = MY_ID;
     MY_ID = id;
+
+    // Update ownerId for files I own if my peer ID changed
+    if (oldId !== id) {
+      for (const [fid, meta] of allKnownFiles) {
+        if (meta.ownerId === oldId || meta.ownerId === id || mySharedFiles.has(fid)) {
+          meta.ownerId = id;
+        }
+      }
+      for (const [fid] of mySharedFiles) {
+        const meta = allKnownFiles.get(fid);
+        if (meta) meta.ownerId = id;
+      }
+    }
+
     hide('home-view');
     show('room-view');
     
     if (isCreatingHost) {
       role = 'host';
-      $('room-code-display').textContent = id;
+      const rcd = $('room-code-display');
+      if (rcd) rcd.textContent = id;
       roomMembers.set(MY_ID, { name: MY_NAME });
       renderUserList();
       updateParticipantCount();
     } else {
       role = 'guest';
-      $('room-code-display').textContent = targetHostId;
+      const rcd = $('room-code-display');
+      if (rcd) rcd.textContent = targetHostId;
       connectToHost(targetHostId);
     }
   });
@@ -557,10 +606,12 @@ function initPeer(isCreatingHost, targetHostId) {
 
   peer.on('error', err => {
     if (role === null) {
-      $('btn-create-room').textContent = '+ Create Room';
-      $('btn-join-room').textContent = 'Join';
-      $('join-error').hidden = false;
-      $('join-error').textContent = 'Could not connect to network or room.';
+      const bcr = $('btn-create-room');
+      if (bcr) bcr.textContent = '+ Create Room';
+      const bjr = $('btn-join-room');
+      if (bjr) bjr.textContent = 'Join';
+      const je = $('join-error');
+      if (je) { je.hidden = false; je.textContent = 'Could not connect to network or room.'; }
       showToast("Connection failed", "error");
     } else {
       showToast(err.message || "Network Error", "error");
@@ -681,9 +732,28 @@ function updateParticipantCount() {
 
 // ── Guest Logic ──────────────────────────────────────────────────────────────
 function connectToHost(hostId) {
+  if (!hostId || hostId.length < 4) {
+    showToast("Invalid room code.", "error");
+    return;
+  }
+
   hostConn = peer.connect(hostId, { reliable: true });
+  if (!hostConn) {
+    showToast("Failed to create connection.", "error");
+    return;
+  }
+
+  const connectTimer = setTimeout(() => {
+    if (hostConn && !hostConn.open) {
+      try { hostConn.close(); } catch (_) {}
+      showToast("Connection timed out. Check the room code.", "error");
+      updatePulse('offline');
+      $('btn-join-room').textContent = 'Join';
+    }
+  }, 10000);
   
   hostConn.on('open', () => {
+    clearTimeout(connectTimer);
     updatePulse('Connected to room');
     showToast("Joined room successfully", "success");
     playSound('chime');
@@ -736,10 +806,17 @@ function connectToHost(hostId) {
     }
   });
 
+  hostConn.on('error', err => {
+    showToast("Connection to room failed: " + (err.message || "Network error"), "error");
+    updatePulse('offline');
+  });
+
   hostConn.on('close', () => {
+    if (leaveInProgress) return;
     updatePulse('offline');
     showToast("Room host disconnected.", "error");
     setTimeout(() => {
+      if (leaveInProgress) return;
       window.location.hash = '';
       window.location.reload();
     }, 2000);
@@ -748,6 +825,8 @@ function connectToHost(hostId) {
 
 // ── Sharing Files ────────────────────────────────────────────────────────────
 function handleFilesSelected(files) {
+  if (!peer) { showToast("Not connected to any room.", "error"); return; }
+
   for (const file of files) {
     if (file.size > 2 * 1024 * 1024 * 1024) {
       showToast(`${escapeHTML(file.name)} is too large (max 2GB).`, 'error');
@@ -814,7 +893,7 @@ function addFileToFeed(fileMeta) {
   hide('empty-feed-msg');
   
   const feed = $('file-feed');
-  const isMine = fileMeta.ownerId === peer.id;
+  const isMine = peer && fileMeta.ownerId === peer.id;
   const av = getAvatarParams(fileMeta.ownerId);
 
   if (!isMine) notify("New File Shared", fileMeta.name);
@@ -840,7 +919,7 @@ function getFileChipHTML(fileMeta, isMine, av) {
       <p class="file-chip-name">${escapeHTML(fileMeta.name)}</p>
       <p class="file-chip-size">${fmt(fileMeta.size)} ${isMine ? '· Shared by you' : ''}</p>
       
-      ${fileMeta.thumbnail ? `<div style="margin-top:10px; border-radius:8px; overflow:hidden; border:1px solid rgba(59,130,246,0.2);"><img src="${fileMeta.thumbnail}" style="max-width:100%; display:block;" /></div>` : ''}
+      ${fileMeta.thumbnail && fileMeta.thumbnail.startsWith('data:image/') ? `<div style="margin-top:10px; border-radius:8px; overflow:hidden; border:1px solid rgba(59,130,246,0.2);"><img src="${escapeHTML(fileMeta.thumbnail)}" alt="" style="max-width:100%; display:block;" /></div>` : ''}
       
       <!-- Progress Bar (shown during active download) -->
       <div id="prog-wrap-${fileMeta.id}" style="display:none; margin-top:10px;">
@@ -951,13 +1030,17 @@ function showTypingIndicator(id) {
 }
 
 function parseMarkdown(text) {
+  // Escape HTML first, but protect & in URLs by unescaping them back in hrefs
   let h = escapeHTML(text);
-  // Links
-  h = h.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" style="color:var(--accent);text-decoration:underline;">$1</a>');
-  // Bold
+  // Bold (must do before italic to avoid overlapping)
   h = h.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   // Italic
   h = h.replace(/\*(.*?)\*/g, '<em>$1</em>');
+  // Links (un-escape &amp; back to & in href)
+  h = h.replace(/(https?:\/\/[^\s<]+)/g, (m) => {
+    const clean = m.replace(/&amp;/g, '&');
+    return `<a href="${clean}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;">${m}</a>`;
+  });
   // Code block
   h = h.replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(0,0,0,0.3);padding:8px;border-radius:6px;margin:4px 0;font-family:\'JetBrains Mono\',monospace;"><code>$1</code></pre>');
   // Inline code
@@ -1015,20 +1098,27 @@ function initiateFileTransfer(targetPeerId, fileId) {
   if (!file) return;
 
   // Open a dedicated connection just for this file transfer
-  const xferConn = peer.connect(targetPeerId, {
-    reliable: true,
-    metadata: { transferFileId: fileId }
-  });
+  let xferConn;
+  const resetUploadBtn = () => {
+    const btn = $(`btn-ul-${fileId}`);
+    if (btn) { btn.classList.remove('downloading', 'done'); btn.textContent = 'Upload'; btn.disabled = false; }
+  };
 
   let aborted = false;
 
-  xferConn.on('error', () => { aborted = true; });
-  xferConn.on('close', () => { aborted = true; });
+  try {
+    xferConn = peer.connect(targetPeerId, {
+      reliable: true,
+      metadata: { transferFileId: fileId }
+    });
+  } catch (err) {
+    showToast("Failed to create upload connection.", "error");
+    resetUploadBtn();
+    return;
+  }
 
-  const resetUploadBtn = () => {
-    const btn = $(`btn-ul-${fileId}`);
-    if (btn) { btn.classList.remove('downloading'); btn.textContent = 'Upload'; btn.disabled = false; }
-  };
+  xferConn.on('error', () => { aborted = true; resetUploadBtn(); });
+  xferConn.on('close', () => { if (aborted) resetUploadBtn(); });
 
   xferConn.on('open', () => {
     let offset = 0;
@@ -1321,7 +1411,7 @@ function renderUserList() {
   
   roomMembers.forEach((data, id) => {
     const isMe = id === MY_ID;
-    const av = getAvatarParams(data.name || id);
+    const av = getAvatarParams(id);
     const div = document.createElement('div');
     div.className = 'file-chip';
     div.style.padding = '8px 12px';

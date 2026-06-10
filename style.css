@@ -257,6 +257,8 @@ body {
 
 .format-bar{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
 
+.connect-err{color:#ef4444;font-size:.8rem;margin-top:8px;text-align:center;animation:shakeError .4s ease}
+
 .empty-feed{
   text-align:center;color:var(--text-dim);font-size:.9rem;
   margin:auto;padding:40px 20px
