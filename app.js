@@ -186,6 +186,7 @@ let localStream = null;
 let activeCalls = new Map();
 let typingTimer = null;
 let leaveInProgress = false;
+let pendingDownloads = new Map(); // fileId -> { timeoutTimer, resolve, reject, btn }
 
 // ── Background Particles ─────────────────────────────────────────────────────
 window.triggerParticleBurst = () => {};
@@ -333,6 +334,8 @@ function cleanupPeerResources() {
   mySharedFiles.clear();
   allKnownFiles.clear();
   chatHistory.length = 0;
+  for (const [, pending] of pendingDownloads) clearTimeout(pending.timeoutTimer);
+  pendingDownloads.clear();
   roomMembers.clear();
   avatarCache.clear();
   if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
@@ -482,12 +485,19 @@ function stopScreenShare() {
 }
 
 function handleCall(call) {
-  const isVideoFile = call.metadata && call.metadata.type === 'video_stream';
+  const isVideoFile = call.metadata?.type === 'video_stream';
   activeCalls.set(call.peer, call);
   call.on('stream', remoteStream => {
-    addVideoStream(call.peer, remoteStream, false, isVideoFile);
+    if (remoteStream && remoteStream.active !== false) {
+      addVideoStream(call.peer, remoteStream, false, isVideoFile);
+    }
   });
   call.on('close', () => {
+    removeVideoStream(call.peer);
+    activeCalls.delete(call.peer);
+  });
+  call.on('error', err => {
+    console.error('Call error:', err);
     removeVideoStream(call.peer);
     activeCalls.delete(call.peer);
   });
@@ -495,25 +505,26 @@ function handleCall(call) {
 
 function addVideoStream(peerId, stream, isLocal, isVideoFile = false) {
   const container = $('file-feed');
+  if (!container) return;
   let video = $(`video-${peerId}`);
   if (!video) {
     const wrap = document.createElement('div');
     wrap.id = `video-wrap-${peerId}`;
-    wrap.style = "position:relative; margin-bottom: 15px; border-radius: 12px; overflow: hidden; border: 1px solid var(--accent-dim); background: #000;";
+    wrap.style = "position:relative;margin-bottom:15px;border-radius:12px;overflow:hidden;border:1px solid var(--accent-dim);background:#000;";
     
     video = document.createElement('video');
     video.id = `video-${peerId}`;
-    video.style = "width: 100%; display: block;";
+    video.style = "width:100%;display:block;";
     video.autoplay = true;
     video.playsInline = true;
     if (isLocal) video.muted = true;
-    else if (isVideoFile) video.controls = true; // Let them control volume if streaming a file
+    else if (isVideoFile) video.controls = true;
     
     const label = document.createElement('div');
-    label.style = "position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.6); padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; color: #fff;";
+    label.style = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:6px;font-size:0.75rem;color:#fff;pointer-events:none;";
     const mem = roomMembers.get(peerId);
-    const name = mem ? mem.name : peerId;
-    label.textContent = isLocal ? "Your Screen" : (isVideoFile ? `Watching with ${name}` : `${name}'s Screen`);
+    const name = mem ? mem.name : peerId.substring(0, 8);
+    label.textContent = isLocal ? "Your Screen" : (isVideoFile ? `Streaming: ${name}` : `${name}'s Screen`);
 
     wrap.appendChild(video);
     wrap.appendChild(label);
@@ -521,7 +532,7 @@ function addVideoStream(peerId, stream, isLocal, isVideoFile = false) {
     hide('empty-feed-msg');
   }
   video.srcObject = stream;
-  video.play().catch(e => console.error("Video play error:", e));
+  video.play().catch(() => {}); // Silently handle autoplay restrictions
 }
 
 function removeVideoStream(peerId) {
@@ -596,12 +607,16 @@ function initPeer(isCreatingHost, targetHostId) {
   });
 
   peer.on('call', call => {
-    if (localStream) {
-      call.answer(localStream);
-    } else {
-      call.answer(); 
+    try {
+      if (localStream) {
+        call.answer(localStream);
+      } else {
+        call.answer();
+      }
+      handleCall(call);
+    } catch (err) {
+      console.error('Call handling error:', err);
     }
-    handleCall(call);
   });
 
   peer.on('error', err => {
@@ -971,50 +986,48 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
   const btn = div.querySelector(`#btn-dl-${fileMeta.id}`);
   if (btn) {
     btn.addEventListener('click', async () => {
+      if (pendingDownloads.has(fileMeta.id)) {
+        showToast('Already downloading this file.', 'info');
+        return;
+      }
+
       btn.disabled = true;
       btn.textContent = 'Requesting…';
 
-      // Request the file from the network
+      const timeoutTimer = setTimeout(() => {
+        pendingDownloads.delete(fileMeta.id);
+        btn.disabled = false;
+        btn.textContent = '↓ Download';
+        showToast('Transfer request timed out. The file owner may be offline.', 'error');
+      }, 30000);
+
+      pendingDownloads.set(fileMeta.id, { timeoutTimer, btn });
+
       const msg = { type: 'request_download', fileId: fileMeta.id, requesterId: peer.id };
       if (role === 'host') {
         const file = allKnownFiles.get(fileMeta.id);
         if (file) {
-          if (file.ownerId === MY_ID) initiateFileTransfer(peer.id, file.id);
-          else {
+          if (file.ownerId === MY_ID) {
+            showToast('You cannot download your own file.', 'info');
+            clearTimeout(timeoutTimer);
+            pendingDownloads.delete(fileMeta.id);
+            btn.disabled = false;
+            btn.textContent = '↓ Download';
+          } else {
             const ownerConn = guestConns.get(file.ownerId);
-            if (ownerConn) ownerConn.send({ type: 'peer_wants_file', fileId: file.id, requesterId: peer.id });
+            if (ownerConn) {
+              ownerConn.send({ type: 'peer_wants_file', fileId: file.id, requesterId: peer.id });
+            } else {
+              showToast('File owner is no longer connected.', 'error');
+              clearTimeout(timeoutTimer);
+              pendingDownloads.delete(fileMeta.id);
+              btn.disabled = false;
+              btn.textContent = '↓ Download';
+            }
           }
         }
       } else {
         hostConn.send(msg);
-      }
-
-      // Timeout if the transfer connection is never established
-      const timeoutTimer = setTimeout(() => {
-        btn.disabled = false;
-        btn.textContent = '↓ Download';
-        showToast('Transfer request timed out.', 'error');
-        const streamData = activeStreams.get(fileMeta.id);
-        if (streamData) {
-          try { streamData.port.postMessage('ABORT'); } catch (_) {}
-          activeStreams.delete(fileMeta.id);
-        }
-      }, 15000);
-
-      // Clear timeout if download starts
-      const progWrap = $(`prog-wrap-${fileMeta.id}`);
-      const clearTimeoutFn = () => { clearTimeout(timeoutTimer); };
-      if (progWrap) {
-        const observer = new MutationObserver(() => {
-          if (progWrap.style.display === 'block') {
-            clearTimeoutFn();
-            observer.disconnect();
-          }
-        });
-        observer.observe(progWrap, { attributes: true, attributeFilter: ['style'] });
-        setTimeout(() => observer.disconnect(), 20000);
-      } else {
-        setTimeout(clearTimeoutFn, 5000);
       }
     });
   }
@@ -1181,37 +1194,73 @@ function initiateFileTransfer(targetPeerId, fileId) {
 // ── Direct Video Streaming (Sender Side) ─────────────────────────────────────
 function initiateVideoStreaming(targetPeerId, fileId) {
   const file = mySharedFiles.get(fileId);
-  if (!file) return;
+  if (!file) {
+    showToast('File no longer available for streaming.', 'error');
+    return;
+  }
+
+  // Check browser support for video capture
+  const hasCaptureStream = typeof HTMLVideoElement !== 'undefined' &&
+    (!!HTMLVideoElement.prototype.captureStream || !!HTMLVideoElement.prototype.mozCaptureStream);
+  if (!hasCaptureStream) {
+    showToast('Video streaming not supported in this browser.', 'error');
+    return;
+  }
 
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
+  video.preload = 'auto';
   video.src = url;
-  video.muted = true; // MUST be muted for autoplay capture
-  video.play().catch(e => console.error("Stream video play error", e));
+  video.muted = true;
+  video.playsInline = true;
+  video.onerror = () => {
+    showToast('Cannot play this video format.', 'error');
+    URL.revokeObjectURL(url);
+  };
+
+  video.play().catch(() => {
+    showToast('Failed to play video for streaming.', 'error');
+    URL.revokeObjectURL(url);
+  });
   
   video.onplay = () => {
-    let stream;
-    if (video.captureStream) {
-      stream = video.captureStream();
-    } else if (video.mozCaptureStream) {
-      stream = video.mozCaptureStream();
-    } else {
-      showToast("Video streaming not supported in this browser.", "error");
-      return;
-    }
-    
-    if (stream) {
-      const call = peer.call(targetPeerId, stream, { metadata: { type: 'video_stream', fileId: file.id } });
+    try {
+      const stream = video.captureStream ? video.captureStream(24) : video.mozCaptureStream(24);
+      if (!stream || !stream.active) {
+        showToast('Failed to capture video stream.', 'error');
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      const call = peer.call(targetPeerId, stream, { 
+        metadata: { type: 'video_stream', fileId: file.id } 
+      });
+      
+      if (!call) {
+        showToast('Failed to initiate video call.', 'error');
+        URL.revokeObjectURL(url);
+        return;
+      }
+      
+      showToast('Streaming video...', 'info');
       
       video.onended = () => {
-        call.close();
+        try { call.close(); } catch (_) {}
         URL.revokeObjectURL(url);
       };
       
       call.on('close', () => {
-        video.pause();
+        try { video.pause(); } catch (_) {}
+        URL.revokeObjectURL(url);
+        video.srcObject = null;
+      });
+
+      call.on('error', () => {
         URL.revokeObjectURL(url);
       });
+    } catch (err) {
+      showToast('Video streaming error: ' + err.message, 'error');
+      URL.revokeObjectURL(url);
     }
   };
 }
@@ -1228,49 +1277,18 @@ function handleIncomingFileTransfer(conn, fileId) {
   const progSpd  = $(`prog-speed-${fileId}`);
   const progEta  = $(`prog-eta-${fileId}`);
 
+  // Clear pending download timer and prevent timeout from firing
+  const pending = pendingDownloads.get(fileId);
+  if (pending) {
+    clearTimeout(pending.timeoutTimer);
+    pendingDownloads.delete(fileId);
+  }
+
   let chunks = [];
   let receivedBytes = 0;
   let processingChunk = false;
   let dataQueue = [];
   const startTime = Date.now();
-
-  let useSW = false;
-  let swPort = null;
-
-  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-    useSW = true;
-    const mc = new MessageChannel();
-    swPort = mc.port1;
-    
-    const downloadUrl = new URL(`/--peerdrop-download--/${Math.random().toString(36).slice(2)}`, window.location.href);
-    downloadUrl.searchParams.set('filename', fileMeta.name);
-    downloadUrl.searchParams.set('size', fileMeta.size);
-    
-    navigator.serviceWorker.controller.postMessage({
-      type: 'START_DOWNLOAD',
-      url: downloadUrl.href,
-      port: mc.port2
-    }, [mc.port2]);
-
-    activeStreams.set(fileId, { port: swPort });
-
-    const iframe = document.createElement('iframe');
-    iframe.hidden = true;
-    iframe.src = downloadUrl.href;
-    document.body.appendChild(iframe);
-    
-    swPort.onmessage = e => {
-      if (e.data === 'CANCEL') {
-        conn.close();
-        showToast('Download cancelled by browser.', 'error');
-        if (btn) {
-          btn.classList.remove('downloading');
-          btn.textContent = 'Cancelled';
-          btn.disabled = false;
-        }
-      }
-    };
-  }
 
   // ─ Show progress UI ─
   if (btn) {
@@ -1307,16 +1325,12 @@ function handleIncomingFileTransfer(conn, fileId) {
     if (buf instanceof Blob) buf = await buf.arrayBuffer();
     else if (!(buf instanceof Uint8Array)) buf = new Uint8Array(buf);
     
-    if (useSW) {
-      try { swPort.postMessage(buf, [buf.buffer]); } catch { writeError = true; return; }
-    } else {
-      chunks.push(buf);
-      if (chunks.length > 500) {
-        showToast('Memory threshold reached. Saving partial file.', 'error');
-        writeError = true;
-        conn.close();
-        return;
-      }
+    chunks.push(buf);
+    if (chunks.length > 500) {
+      showToast('Memory threshold reached. Saving partial file.', 'error');
+      writeError = true;
+      conn.close();
+      return;
     }
 
     if (dataQueue.length === 0 && receivedBytes >= fileMeta.size) {
@@ -1324,40 +1338,34 @@ function handleIncomingFileTransfer(conn, fileId) {
       const elapsedFinal = (Date.now() - startTime) / 1000;
       const finalSpeedBps = elapsedFinal > 0 ? receivedBytes / elapsedFinal : 0;
 
-      const finishUI = () => {
-        if (progFill) progFill.style.width = '100%';
-        if (progPct)  progPct.textContent  = '100%';
-        if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
-        if (progEta)  progEta.textContent  = 'Done!';
-        if (btn) {
-          btn.textContent = '✅ Saved';
-          btn.classList.remove('downloading', 'done');
-          btn.classList.add('done');
-          btn.disabled = false;
-        }
-        playSound('chime');
-        const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
-        window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
-      };
-
-      if (useSW) {
-        try { swPort.postMessage('DONE'); } catch (_) {}
-        try { swPort.close(); } catch (_) {}
-        activeStreams.delete(fileId);
-        finishUI();
-        showToast(`✅ ${escapeHTML(fileMeta.name)} saved to disk!`, 'success');
-      } else {
-        finishUI();
-        const blob = new Blob(chunks);
-        chunks.length = 0;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileMeta.name;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        showToast(`✅ ${escapeHTML(fileMeta.name)} saved!`, 'success');
+      if (progFill) progFill.style.width = '100%';
+      if (progPct)  progPct.textContent  = '100%';
+      if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
+      if (progEta)  progEta.textContent  = 'Done!';
+      if (btn) {
+        btn.textContent = '✅ Saved';
+        btn.classList.remove('downloading');
+        btn.classList.add('done');
+        btn.disabled = false;
       }
+      playSound('chime');
+      const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
+      triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
+
+      // Trigger file download
+      const blob = new Blob(chunks);
+      chunks.length = 0;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileMeta.name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 2000);
+      showToast(`✅ ${escapeHTML(fileMeta.name)} downloaded!`, 'success');
     }
   };
 
@@ -1375,7 +1383,6 @@ function handleIncomingFileTransfer(conn, fileId) {
         await processChunk(data);
       } catch (err) {
         writeError = err;
-        if (useSW && swPort) try { swPort.postMessage('ABORT'); } catch (_) {}
         conn.close();
         break;
       }
@@ -1392,14 +1399,14 @@ function handleIncomingFileTransfer(conn, fileId) {
 
   conn.on('close', () => {
     if (pendingUIUpdate) { cancelAnimationFrame(pendingUIUpdate); pendingUIUpdate = null; }
-    if (receivedBytes < fileMeta.size) {
-      if (useSW && swPort) try { swPort.postMessage('ABORT'); } catch (_) {}
+    if (receivedBytes < fileMeta.size && receivedBytes > 0) {
       if (progWrap) progWrap.style.display = 'none';
       if (btn) {
         btn.classList.remove('downloading', 'done');
         btn.textContent = '↓ Download';
         btn.disabled = false;
       }
+      showToast('Download failed - connection closed.', 'error');
     }
   });
 }
