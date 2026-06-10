@@ -4,12 +4,11 @@
  */
 'use strict';
 
-// ── Service Worker Registration ──────────────────────────────────────────────
+// ── Service Worker & Streams ───────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').catch(err => console.error('SW Error:', err));
+  navigator.serviceWorker.register('sw.js').catch(() => {});
 }
-// Global map to hold streaming ports for Service Worker downloads
-const activeStreams = new Map();
+let activeStreams = new Map();
 
 const CHUNK_SIZE = 256 * 1024;
 
@@ -183,10 +182,6 @@ let mySharedFiles = new Map(); // fileId -> File object
 let allKnownFiles = new Map(); // fileId -> { id, name, size, mime, ownerId }
 let chatHistory = []; // Array of { type: 'chat', text, senderId, time }
 
-// Streaming download: maps fileId -> FileSystemWritableFileStream
-// When File System Access API is available, we write each chunk directly to disk.
-const fileWritableStreams = new Map();
-
 let localStream = null;
 let activeCalls = new Map();
 let typingTimer = null;
@@ -320,7 +315,28 @@ if (hashId.length >= 4) {
   hide('room-view');
 }
 
+function cleanupPeerResources() {
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  for (const [, call] of activeCalls) call.close();
+  activeCalls.clear();
+  if (hostConn) { try { hostConn.close(); } catch (_) {} hostConn = null; }
+  for (const [, conn] of guestConns) { try { conn.close(); } catch (_) {} }
+  guestConns.clear();
+  if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
+  for (const [, data] of activeStreams) { try { data.port.postMessage('ABORT'); } catch (_) {} }
+  activeStreams.clear();
+  mySharedFiles.clear();
+  allKnownFiles.clear();
+  chatHistory.length = 0;
+  roomMembers.clear();
+  role = null;
+}
+
 $('btn-leave-room').addEventListener('click', () => {
+  cleanupPeerResources();
   window.location.hash = '';
   window.location.reload();
 });
@@ -381,6 +397,13 @@ function sendChatMessage() {
     playSound('error');
     return;
   }
+
+  if (role !== 'host' && (!hostConn || !hostConn.open)) {
+    showToast("Not connected to the room yet!", "error");
+    triggerInputShake(chatInput);
+    return;
+  }
+
   chatInput.value = '';
   playSound('pop');
 
@@ -391,12 +414,8 @@ function sendChatMessage() {
     addChatToFeed(msg);
     broadcast(msg);
   } else {
-    if (hostConn && hostConn.open) {
-      addChatToFeed(msg); // Show locally
-      hostConn.send(msg); // Send to host
-    } else {
-      showToast("Not connected to the room yet!", "error");
-    }
+    addChatToFeed(msg);
+    hostConn.send(msg);
   }
 }
 
@@ -537,9 +556,7 @@ function initPeer(isCreatingHost, targetHostId) {
   });
 
   peer.on('error', err => {
-    console.error('[PeerJS Error]', err);
     if (role === null) {
-      // Failed during connect
       $('btn-create-room').textContent = '+ Create Room';
       $('btn-join-room').textContent = 'Join';
       $('join-error').hidden = false;
@@ -576,7 +593,7 @@ function setupHostControlConnection(conn) {
         members: Array.from(roomMembers.entries()).map(([id, val]) => ({id, name: val.name}))
       });
       
-      showToast(`${sanitizeHTML(data.name)} joined the room.`, "info");
+      showToast(`${escapeHTML(data.name)} joined the room.`, "info");
       playSound('chime');
     }
     else if (data.type === 'chat') {
@@ -643,7 +660,7 @@ function setupHostControlConnection(conn) {
       roomMembers.delete(conn.peer);
       broadcast({ type: 'member_left', id: conn.peer });
       renderUserList();
-      showToast(`${sanitizeHTML(leftMem.name)} left the room.`, "info");
+      showToast(`${escapeHTML(leftMem.name)} left the room.`, "info");
     }
     updateParticipantCount();
   });
@@ -732,6 +749,11 @@ function connectToHost(hostId) {
 // ── Sharing Files ────────────────────────────────────────────────────────────
 function handleFilesSelected(files) {
   for (const file of files) {
+    if (file.size > 2 * 1024 * 1024 * 1024) {
+      showToast(`${escapeHTML(file.name)} is too large (max 2GB).`, 'error');
+      continue;
+    }
+
     playSound('whoosh');
     const fileId = 'f_' + Math.random().toString(36).substr(2, 9);
     mySharedFiles.set(fileId, file);
@@ -744,7 +766,7 @@ function handleFilesSelected(files) {
       ownerId: peer.id
     };
 
-    if (file.type.startsWith('image/')) {
+    if (file.type.startsWith('image/') && file.size < 10 * 1024 * 1024) {
       const reader = new FileReader();
       reader.onload = e => {
         const img = new Image();
@@ -759,8 +781,10 @@ function handleFilesSelected(files) {
           fileMeta.thumbnail = canvas.toDataURL('image/jpeg', 0.5);
           finishFileAnnounce(fileId, fileMeta);
         };
+        img.onerror = () => finishFileAnnounce(fileId, fileMeta);
         img.src = e.target.result;
       };
+      reader.onerror = () => finishFileAnnounce(fileId, fileMeta);
       reader.readAsDataURL(file);
     } else {
       finishFileAnnounce(fileId, fileMeta);
@@ -832,11 +856,11 @@ function getFileChipHTML(fileMeta, isMine, av) {
       
       <div style="display: flex; gap: 8px; margin-top: 10px; flex-shrink: 0;">
         ${!isMine && fileMeta.mime && fileMeta.mime.startsWith('video/') 
-          ? `<button id="btn-stream-${fileMeta.id}" class="btn-primary" style="padding: 8px 16px; font-size: 0.8rem; background: #a855f7;">▶ Stream</button>` 
+          ? `<button id="btn-stream-${fileMeta.id}" class="btn-primary stream-btn" style="padding: 8px 16px; font-size: 0.8rem;">▶ Stream</button>` 
           : ''}
         ${isMine 
         ? `<button id="btn-ul-${fileMeta.id}" disabled class="btn-primary btn-ghost-sm">Shared</button>`
-        : `<button id="btn-dl-${fileMeta.id}" class="btn-primary btn-dl" style="padding: 8px 16px; font-size: 0.8rem;">↓ Download</button>`
+        : `<button id="btn-dl-${fileMeta.id}" class="btn-primary btn-dl btn-sm">↓ Download</button>`
         }
       </div>
     </div>
@@ -887,18 +911,32 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
       }
 
       // Timeout if the transfer connection is never established
-      setTimeout(async () => {
-        if (btn.textContent === 'Requesting…' || btn.textContent === 'Starting…') {
-          btn.disabled = false;
-          btn.textContent = '↓ Download';
-          showToast('Transfer request timed out.', 'error');
-          const streamData = activeStreams.get(fileMeta.id);
-          if (streamData) {
-            streamData.port.postMessage('ABORT');
-            activeStreams.delete(fileMeta.id);
-          }
+      const timeoutTimer = setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = '↓ Download';
+        showToast('Transfer request timed out.', 'error');
+        const streamData = activeStreams.get(fileMeta.id);
+        if (streamData) {
+          try { streamData.port.postMessage('ABORT'); } catch (_) {}
+          activeStreams.delete(fileMeta.id);
         }
       }, 15000);
+
+      // Clear timeout if download starts
+      const progWrap = $(`prog-wrap-${fileMeta.id}`);
+      const clearTimeoutFn = () => { clearTimeout(timeoutTimer); };
+      if (progWrap) {
+        const observer = new MutationObserver(() => {
+          if (progWrap.style.display === 'block') {
+            clearTimeoutFn();
+            observer.disconnect();
+          }
+        });
+        observer.observe(progWrap, { attributes: true, attributeFilter: ['style'] });
+        setTimeout(() => observer.disconnect(), 20000);
+      } else {
+        setTimeout(clearTimeoutFn, 5000);
+      }
     });
   }
 }
@@ -982,47 +1020,51 @@ function initiateFileTransfer(targetPeerId, fileId) {
     metadata: { transferFileId: fileId }
   });
 
-  xferConn.on('error', err => {
-    console.error('File transfer connection error:', err);
-    showToast('Failed to connect to receiver.', 'error');
+  let aborted = false;
+
+  xferConn.on('error', () => { aborted = true; });
+  xferConn.on('close', () => { aborted = true; });
+
+  const resetUploadBtn = () => {
     const btn = $(`btn-ul-${fileId}`);
-    if (btn) { btn.classList.remove('downloading'); btn.textContent = 'Retry'; btn.disabled = false; }
-  });
+    if (btn) { btn.classList.remove('downloading'); btn.textContent = 'Upload'; btn.disabled = false; }
+  };
 
   xferConn.on('open', () => {
     let offset = 0;
     const btn = $(`btn-ul-${fileId}`);
-    
-    let aborted = false;
-    xferConn.on('close', () => aborted = true);
-    xferConn.on('error', () => aborted = true);
 
     if (xferConn.dataChannel) {
-      xferConn.dataChannel.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
+      xferConn.dataChannel.bufferedAmountLowThreshold = 1024 * 1024;
       xferConn.dataChannel.onbufferedamountlow = sendNextChunk;
     }
     
     function sendNextChunk() {
-      if (aborted) return;
+      if (aborted || !xferConn.open) return;
 
       if (offset >= file.size) {
-        // Done
         setTimeout(() => xferConn.close(), 500);
         return;
       }
 
-      // Check buffer to prevent WebRTC overflow (pause if > 8MB buffered)
       if (xferConn.dataChannel && xferConn.dataChannel.bufferedAmount > 8 * 1024 * 1024) {
-        return; // Waits for bufferedamountlow
+        return;
       }
       
       const slice = file.slice(offset, offset + CHUNK_SIZE);
       const reader = new FileReader();
       reader.onload = e => {
-        xferConn.send(e.target.result);
+        if (aborted) return;
+        try {
+          xferConn.send(e.target.result);
+        } catch {
+          aborted = true;
+          showToast('Upload failed.', 'error');
+          resetUploadBtn();
+          return;
+        }
         offset += e.target.result.byteLength;
         
-        // Update UI progress for uploader
         const pct = Math.round(offset / file.size * 100);
         if (btn) {
           if (!btn.classList.contains('downloading') && pct < 100) {
@@ -1033,12 +1075,12 @@ function initiateFileTransfer(targetPeerId, fileId) {
             btn.classList.remove('downloading');
             btn.classList.add('done');
             btn.textContent = '✅';
-            btn.style.background = '#10b981';
           }
         }
 
-        sendNextChunk();
+        requestAnimationFrame(sendNextChunk);
       };
+      reader.onerror = () => { aborted = true; showToast('File read error.', 'error'); resetUploadBtn(); };
       reader.readAsArrayBuffer(slice);
     }
 
@@ -1096,9 +1138,10 @@ function handleIncomingFileTransfer(conn, fileId) {
   const progSpd  = $(`prog-speed-${fileId}`);
   const progEta  = $(`prog-eta-${fileId}`);
 
-  let writeChain = Promise.resolve();
   let chunks = [];
   let receivedBytes = 0;
+  let processingChunk = false;
+  let dataQueue = [];
   const startTime = Date.now();
 
   let useSW = false;
@@ -1147,96 +1190,125 @@ function handleIncomingFileTransfer(conn, fileId) {
   }
   if (progWrap) progWrap.style.display = 'block';
 
-  let lastUIUpdate = 0;
   let writeError = null;
+  let pendingUIUpdate = null;
 
-  conn.on('data', data => {
-    if (writeError) return;
-
-    const chunkBytes = (data instanceof Blob) ? data.size : data.byteLength;
-    receivedBytes += chunkBytes;
-
-    const now = Date.now();
-
-    if (now - lastUIUpdate > 50) {
-      lastUIUpdate = now;
+  const scheduleUIUpdate = () => {
+    if (pendingUIUpdate) return;
+    pendingUIUpdate = requestAnimationFrame(() => {
+      pendingUIUpdate = null;
       const pct      = Math.round(receivedBytes / fileMeta.size * 100);
-      const elapsed  = (now - startTime) / 1000;
+      const elapsed  = (Date.now() - startTime) / 1000;
       const speedBps = elapsed > 0 ? receivedBytes / elapsed : 0;
       const etaSecs  = speedBps > 0 ? (fileMeta.size - receivedBytes) / speedBps : Infinity;
 
-      // Update progress bar
       if (progFill) progFill.style.width = pct + '%';
       if (progPct)  progPct.textContent  = pct + '%';
       if (progSpd)  progSpd.textContent  = fmtSpeed(speedBps);
       if (progEta)  progEta.textContent  = fmtEta(etaSecs);
       if (btn) btn.textContent = `${pct}%`;
+    });
+  };
+
+  const processChunk = async (data) => {
+    if (writeError) return;
+    
+    let buf = data;
+    if (buf instanceof Blob) buf = await buf.arrayBuffer();
+    else if (!(buf instanceof Uint8Array)) buf = new Uint8Array(buf);
+    
+    if (useSW) {
+      try { swPort.postMessage(buf, [buf.buffer]); } catch { writeError = true; return; }
+    } else {
+      chunks.push(buf);
+      if (chunks.length > 500) {
+        showToast('Memory threshold reached. Saving partial file.', 'error');
+        writeError = true;
+        conn.close();
+        return;
+      }
     }
 
-    writeChain = writeChain.then(async () => {
-      let buf = data;
-      if (buf instanceof Blob) buf = await buf.arrayBuffer();
-      
-      if (useSW) {
-        swPort.postMessage(new Uint8Array(buf));
-      } else {
-        chunks.push(buf);
-      }
+    if (dataQueue.length === 0 && receivedBytes >= fileMeta.size) {
+      if (pendingUIUpdate) { cancelAnimationFrame(pendingUIUpdate); pendingUIUpdate = null; }
+      const elapsedFinal = (Date.now() - startTime) / 1000;
+      const finalSpeedBps = elapsedFinal > 0 ? receivedBytes / elapsedFinal : 0;
 
-      if (receivedBytes >= fileMeta.size) {
-        const elapsedFinal = (Date.now() - startTime) / 1000;
-        const finalSpeedBps = elapsedFinal > 0 ? receivedBytes / elapsedFinal : 0;
-
-        const finishUI = () => {
-          if (progFill) progFill.style.width = '100%';
-          if (progPct)  progPct.textContent  = '100%';
-          if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
-          if (progEta)  progEta.textContent  = 'Done!';
-          if (btn) {
-            btn.textContent = '✅ Saved';
-            btn.classList.remove('downloading');
-            btn.classList.add('done');
-            btn.disabled = false;
-          }
-          playSound('chime');
-          const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
-          window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
-        };
-
-        if (useSW) {
-          swPort.postMessage('DONE');
-          swPort.close();
-          activeStreams.delete(fileId);
-          finishUI();
-          showToast(`✅ ${escapeHTML(fileMeta.name)} saved to disk!`, 'success');
-        } else {
-          finishUI();
-          const blob = new Blob(chunks);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = fileMeta.name;
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-          showToast(`✅ ${escapeHTML(fileMeta.name)} saved!`, 'success');
+      const finishUI = () => {
+        if (progFill) progFill.style.width = '100%';
+        if (progPct)  progPct.textContent  = '100%';
+        if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
+        if (progEta)  progEta.textContent  = 'Done!';
+        if (btn) {
+          btn.textContent = '✅ Saved';
+          btn.classList.remove('downloading', 'done');
+          btn.classList.add('done');
+          btn.disabled = false;
         }
+        playSound('chime');
+        const rect = btn ? btn.getBoundingClientRect() : { left: window.innerWidth/2, top: window.innerHeight/2, width: 0, height: 0 };
+        window.triggerParticleBurst(rect.left + rect.width/2, rect.top + rect.height/2);
+      };
+
+      if (useSW) {
+        try { swPort.postMessage('DONE'); } catch (_) {}
+        try { swPort.close(); } catch (_) {}
+        activeStreams.delete(fileId);
+        finishUI();
+        showToast(`✅ ${escapeHTML(fileMeta.name)} saved to disk!`, 'success');
+      } else {
+        finishUI();
+        const blob = new Blob(chunks);
+        chunks.length = 0;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileMeta.name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast(`✅ ${escapeHTML(fileMeta.name)} saved!`, 'success');
       }
-    }).catch(err => {
-      writeError = err;
-      if (useSW && swPort) swPort.postMessage('ABORT');
-      conn.close();
-    });
+    }
+  };
+
+  const processQueue = async () => {
+    if (processingChunk || dataQueue.length === 0) return;
+    processingChunk = true;
+    while (dataQueue.length > 0 && !writeError) {
+      const data = dataQueue.shift();
+
+      const chunkBytes = (data instanceof Blob) ? data.size : data.byteLength;
+      receivedBytes += chunkBytes;
+      scheduleUIUpdate();
+
+      try {
+        await processChunk(data);
+      } catch (err) {
+        writeError = err;
+        if (useSW && swPort) try { swPort.postMessage('ABORT'); } catch (_) {}
+        conn.close();
+        break;
+      }
+    }
+    processingChunk = false;
+    if (dataQueue.length > 0 && !writeError) processQueue();
+  };
+
+  conn.on('data', data => {
+    if (writeError) return;
+    dataQueue.push(data);
+    if (!processingChunk) processQueue();
   });
 
   conn.on('close', () => {
+    if (pendingUIUpdate) { cancelAnimationFrame(pendingUIUpdate); pendingUIUpdate = null; }
     if (receivedBytes < fileMeta.size) {
-      if (useSW && swPort) swPort.postMessage('ABORT');
+      if (useSW && swPort) try { swPort.postMessage('ABORT'); } catch (_) {}
       if (progWrap) progWrap.style.display = 'none';
-      if (btn && btn.textContent !== 'Cancelled') {
-        btn.classList.remove('downloading');
-        btn.textContent = 'Failed';
+      if (btn) {
+        btn.classList.remove('downloading', 'done');
+        btn.textContent = '↓ Download';
         btn.disabled = false;
-        btn.style.background = '';
       }
     }
   });
