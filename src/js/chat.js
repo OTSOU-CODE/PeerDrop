@@ -120,6 +120,7 @@ async function addChatToFeed(msg) {
 
   const div = document.createElement('div');
   div.className = 'feed-item';
+  div.dataset.type = 'chat';
   div.style.cssText = 'display:flex;flex-direction:' + (isMine ? 'row-reverse' : 'row') + ';align-items:flex-end;gap:8px;margin-bottom:14px';
 
   const msgTime = msg.time || Date.now();

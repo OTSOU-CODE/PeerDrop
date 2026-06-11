@@ -19,6 +19,7 @@ const triggerInputShake = inputElement => {
   void inputElement.offsetWidth;
   inputElement.classList.add('error-shake');
 };
+const sanitizeFilename = name => String(name).replace(/[\\/:*?"<>|]/g, '_').slice(0, 200);
 const escapeHTML = str => {
   if (str == null) return '';
   return String(str).replace(/&/g, '&amp;')
@@ -121,6 +122,9 @@ function setLocalStream(v) { localStream = v; }
 function setTypingTimer(v) { typingTimer = v; }
 function setLeaveInProgress(v) { leaveInProgress = v; }
 
+let encryptionKey = null;
+function setEncryptionKey(v) { encryptionKey = v; }
+
 let notificationsEnabled = false;
 if ("Notification" in window) {
   if (Notification.permission === "granted") notificationsEnabled = true;
@@ -137,7 +141,7 @@ function broadcast(msg, excludePeerId = null) {
 
 export {
   $, show, hide, triggerInputShake,
-  escapeHTML, fmt, fmtSpeed, fmtEta, mimeEmoji, mimeIcon,
+  escapeHTML, sanitizeFilename, fmt, fmtSpeed, fmtEta, mimeEmoji, mimeIcon,
   getAvatarParams, avatarCache,
   CHUNK_SIZE, STREAM_QUALITIES,
   audioCtx, setAudioCtx, savedName,
@@ -149,5 +153,6 @@ export {
   typingTimer, setTypingTimer, leaveInProgress, setLeaveInProgress,
   pendingDownloads,
   activeStreams, notificationsEnabled, setNotificationsEnabled,
+  encryptionKey, setEncryptionKey,
   broadcast
 };

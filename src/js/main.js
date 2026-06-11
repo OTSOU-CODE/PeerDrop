@@ -23,7 +23,8 @@ import {
   stopScreenShare, handleCall
 } from './peer.js';
 import { dbGet, dbSet } from './db.js';
-import { chatHistory, allKnownFiles } from './state.js';
+import { chatHistory, allKnownFiles, encryptionKey, setEncryptionKey } from './state.js';
+import { generateKey } from './crypto.js';
 import { addChatToFeed } from './chat.js';
 import { addFileToFeed } from './files.js';
 
@@ -117,7 +118,9 @@ if (notifBtn) {
 window.addEventListener('paste', handlePaste);
 
 $('btn-create-room')?.addEventListener('click', () => {
-  if (validateName()) initPeer(true, MY_ID);
+  if (!validateName()) return;
+  if (!encryptionKey) setEncryptionKey(generateKey());
+  initPeer(true, MY_ID);
 });
 
 $('btn-join-room')?.addEventListener('click', () => {
@@ -130,8 +133,16 @@ $('btn-join-room')?.addEventListener('click', () => {
   }
 });
 
-const hashId = window.location.hash.replace('#', '').toUpperCase().trim();
-if (hashId.length >= 4) {
+function parseHashParts() {
+  const hash = window.location.hash.replace('#', '');
+  const dot = hash.indexOf('.');
+  if (dot > 0) return { code: hash.slice(0, dot), key: hash.slice(dot + 1) };
+  return { code: hash, key: null };
+}
+
+const { code: hashId, key: hashKey } = parseHashParts();
+if (hashId && hashId.length >= 4) {
+  if (hashKey) setEncryptionKey(hashKey);
   const joinCode = $('input-join-code');
   if (joinCode) joinCode.value = hashId;
   const saved = localStorage.getItem('peerdrop_name');
@@ -146,6 +157,11 @@ if (hashId.length >= 4) {
 }
 
 $('btn-leave-room')?.addEventListener('click', () => {
+  const isHost = role === 'host';
+  const msg = isHost
+    ? 'You are the host. Leaving will END the session for everyone in the room.'
+    : 'Leave this room?';
+  if (!confirm(msg)) return;
   cleanupPeerResources();
   window.location.hash = '';
   window.location.reload();
@@ -161,7 +177,8 @@ if (window.location.protocol === 'file:') {
 $('btn-copy-link')?.addEventListener('click', () => {
   const rcd = $('room-code-display');
   if (!rcd) return;
-  const url = `${location.origin}${location.pathname}#${rcd.textContent}`;
+  const keyPart = encryptionKey ? '.' + encryptionKey : '';
+  const url = `${location.origin}${location.pathname}#${rcd.textContent}${keyPart}`;
   navigator.clipboard.writeText(url).then(() => {
     const bcl = $('btn-copy-link');
     if (bcl) { bcl.textContent = 'Copied!'; setTimeout(() => { bcl.textContent = 'Copy Link'; }, 2000); }
@@ -189,7 +206,8 @@ $('btn-qr')?.addEventListener('click', () => {
   if (!shown) {
     const rcd = $('room-code-display');
     if (!rcd) return;
-    const url = `${location.origin}${location.pathname}#${rcd.textContent}`;
+    const keyPart = encryptionKey ? '.' + encryptionKey : '';
+    const url = `${location.origin}${location.pathname}#${rcd.textContent}${keyPart}`;
     const canvas = $('qr-canvas');
     if (canvas) drawQR(url, canvas);
   }
@@ -252,10 +270,34 @@ $('btn-send-chat')?.addEventListener('click', sendChatMessage);
 const chatInput = $('chat-input');
 if (chatInput) {
   chatInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') sendChatMessage();
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
     else handleTyping();
   });
 }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const preview = $('preview-overlay');
+    if (preview && !preview.hidden) preview.hidden = true;
+  }
+});
+
+// ── Feed Tabs ────────────────────────────────────────────────────────────
+document.querySelectorAll('.feed-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.feed-tab').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
+    tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
+    const filter = tab.dataset.filter;
+    const feed = $('file-feed');
+    if (!feed) return;
+    for (const item of feed.children) {
+      if (item.dataset.type) {
+        item.style.display = (filter === 'all' || item.dataset.type === filter) ? '' : 'none';
+      }
+    }
+  });
+});
 
 // ── Persistence Restore ──────────────────────────────────────────────────
 (async () => {

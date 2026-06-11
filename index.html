@@ -131,6 +131,12 @@
         <span>Room Feed</span>
         <span id="notif-btn" class="notif-btn" tabindex="0" role="button" aria-label="Toggle desktop notifications">🔕</span>
       </h2>
+      <div class="feed-tabs" role="tablist" aria-label="Filter feed">
+        <button class="feed-tab active" data-filter="all" role="tab" aria-selected="true">All</button>
+        <button class="feed-tab" data-filter="file" role="tab">Files</button>
+        <button class="feed-tab" data-filter="chat" role="tab">Chat</button>
+        <button class="feed-tab" data-filter="system" role="tab">System</button>
+      </div>
       <div id="file-feed" role="log" aria-live="polite">
         <div class="empty-feed" id="empty-feed-msg">
           <span aria-hidden="true">✨</span>

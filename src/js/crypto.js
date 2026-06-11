@@ -1,9 +1,14 @@
 'use strict';
-const SALT = new TextEncoder().encode('peerdrop-aes-gcm-v1');
+const SALT = new TextEncoder().encode('peerdrop-aes-gcm-v2');
 let roomKey = null;
 export function hasKey() { return !!roomKey; }
-export async function deriveKey(roomCode) {
-  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(roomCode), 'PBKDF2', false, ['deriveKey']);
+export function generateKey() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes));
+}
+export async function deriveKey(secret) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), 'PBKDF2', false, ['deriveKey']);
   roomKey = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: SALT, iterations: 100000, hash: 'SHA-256' }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
   return roomKey;
 }

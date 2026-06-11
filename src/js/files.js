@@ -1,7 +1,7 @@
 'use strict';
 
 import {
-  $, hide, show, escapeHTML, fmt, fmtSpeed, fmtEta,
+  $, hide, show, escapeHTML, sanitizeFilename, fmt, fmtSpeed, fmtEta,
   mimeEmoji, mimeIcon, getAvatarParams,
   CHUNK_SIZE, STREAM_QUALITIES,
   peer, role, hostConn, guestConns, roomMembers,
@@ -20,6 +20,7 @@ function addSystemMessage(text, emoji = '📌') {
   if (!feed) return;
   const div = document.createElement('div');
   div.className = 'system-msg feed-item';
+  div.dataset.type = 'system';
   const inner = document.createElement('div');
   inner.className = 'system-msg-inner';
   inner.textContent = emoji + ' ' + text;
@@ -168,6 +169,7 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
   const btn = div.querySelector(`#btn-dl-${fileMeta.id}`);
   if (btn) {
     btn.addEventListener('click', async () => {
+      if (btn.textContent === 'Cancel') return;
       if (pendingDownloads.has(fileMeta.id)) {
         showToast('Already downloading this file.', 'info');
         return;
@@ -230,6 +232,7 @@ function addFileToFeed(fileMeta) {
 
   const div = document.createElement('div');
   div.className = 'file-chip feed-item' + (isMine ? ' mine' : '');
+  div.dataset.type = 'file';
 
   buildFileChip(fileMeta, isMine, av, div);
 
@@ -362,9 +365,15 @@ function addVideoStream(peerId, stream, isLocal, isVideoFile = false) {
 
     if (!isLocal) {
       const controls = document.createElement('div');
-      controls.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;gap:6px;opacity:0;transition:opacity .3s ease';
+      const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+      controls.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;gap:6px;opacity:' + (isTouch ? '0.7' : '0') + ';transition:opacity .3s ease';
       wrap.addEventListener('mouseenter', () => controls.style.opacity = '1');
-      wrap.addEventListener('mouseleave', () => { if (!document.pictureInPictureElement) controls.style.opacity = '0'; });
+      wrap.addEventListener('mouseleave', () => { if (!document.pictureInPictureElement) controls.style.opacity = isTouch ? '0.7' : '0'; });
+      if (isTouch) {
+        controls.addEventListener('click', () => {
+          controls.style.opacity = controls.style.opacity === '0.7' ? '1' : '0.7';
+        });
+      }
 
       const makeBtn = (icon, title, fn) => {
         const b = document.createElement('button');
@@ -446,6 +455,7 @@ function initiateFileTransfer(targetPeerId, fileId) {
   };
 
   let aborted = false;
+  let xferComplete = false;
 
   try {
     xferConn = peer.connect(targetPeerId, {
@@ -459,7 +469,13 @@ function initiateFileTransfer(targetPeerId, fileId) {
   }
 
   xferConn.on('error', () => { aborted = true; resetUploadBtn(); });
-  xferConn.on('close', () => { if (aborted) resetUploadBtn(); });
+  xferConn.on('close', () => {
+    if (aborted) { resetUploadBtn(); return; }
+    if (!xferComplete) {
+      aborted = true;
+      resetUploadBtn();
+    }
+  });
 
   xferConn.on('open', () => {
     let offset = 0, ulStart = Date.now();
@@ -662,12 +678,28 @@ function handleIncomingFileTransfer(conn, fileId) {
   const startTime = Date.now();
 
   if (btn) {
-    btn.textContent = 'Downloading…';
+    btn.textContent = 'Cancel';
     btn.classList.add('downloading');
-    btn.disabled = true;
+    btn.disabled = false;
+    const cancelTransfer = () => {
+      if (cancelled) return;
+      cancelled = true;
+      if (swPort) { try { swPort.postMessage('ABORT'); } catch(_) {} swPort = null; }
+      try { conn.close(); } catch(_) {}
+      btn.textContent = '↓ Download';
+      btn.classList.remove('downloading', 'done');
+      btn.disabled = false;
+      btn.removeEventListener('click', cancelTransfer);
+      if (chipEl) chipEl.classList.remove('downloading-glow');
+      if (progWrap) progWrap.style.display = 'none';
+      if (pendingUIUpdate) { cancelAnimationFrame(pendingUIUpdate); pendingUIUpdate = null; }
+      showToast('Download cancelled.', 'info');
+    };
+    btn.addEventListener('click', cancelTransfer);
   }
   if (progWrap) progWrap.style.display = 'block';
 
+  let cancelled = false;
   let writeError = null;
   let pendingUIUpdate = null;
 
@@ -697,12 +729,12 @@ function handleIncomingFileTransfer(conn, fileId) {
   }
 
   const processChunk = async (data) => {
-    if (writeError) return;
+    if (writeError || cancelled) return;
 
     let buf = data;
     if (buf instanceof Blob) buf = await buf.arrayBuffer();
     else if (!(buf instanceof Uint8Array)) buf = new Uint8Array(buf);
-    try { buf = await decrypt(buf); } catch {}
+    try { buf = await decrypt(buf); } catch (e) { console.warn('decrypt failed:', e); }
 
     if (swPort) { swPort.postMessage(buf); } else { chunks.push(buf); }
 
@@ -737,7 +769,7 @@ function handleIncomingFileTransfer(conn, fileId) {
         chunks.length = 0;
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = fileMeta.name;
+        a.href = url; a.download = sanitizeFilename(fileMeta.name);
         document.body.appendChild(a); a.click();
         setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 2000);
       }

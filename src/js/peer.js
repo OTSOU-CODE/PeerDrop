@@ -10,7 +10,8 @@ import {
   mySharedFiles, allKnownFiles, chatHistory,
   localStream, setLocalStream, activeCalls,
   typingTimer, setTypingTimer, leaveInProgress, setLeaveInProgress,
-  pendingDownloads, activeStreams, avatarCache, broadcast
+  pendingDownloads, activeStreams, avatarCache, broadcast,
+  encryptionKey, setEncryptionKey
 } from './state.js';
 import {
   showLoading, hideLoading, showDragOverlay, hideDragOverlay,
@@ -291,6 +292,10 @@ function connectToHost(hostId) {
       }
     }, backoff);
   });
+
+  hostConn.on('open', () => {
+    if (window._reconnectRetry) window._reconnectRetry = 0;
+  });
 }
 
 function attemptBecomeHost(hostId) {
@@ -315,7 +320,7 @@ function attemptBecomeHost(hostId) {
       setupHostControlConnection(conn);
     });
     p.on('call', call => {
-      try { call.answer(); handleCall(call); } catch (_) {}
+      try { call.answer(); handleCall(call); } catch (e) { console.warn('call.answer failed:', e); }
     });
   });
   p.on('error', () => {
@@ -326,9 +331,16 @@ function attemptBecomeHost(hostId) {
 
 function attemptReconnectAsGuest(hostId) {
   if (leaveInProgress) return;
-  showToast("Reconnecting to new host...", "info");
+  const attempt = (window._reconnectRetry || 0) + 1;
+  window._reconnectRetry = attempt;
+  if (attempt > 3) {
+    showToast("Could not reconnect after 3 attempts. Reloading...", "error");
+    setTimeout(() => window.location.reload(), 2000);
+    return;
+  }
+  showToast(`Reconnecting to new host (attempt ${attempt}/3)...`, "info");
   setRole(null);
-  const delay = 1000 + Math.random() * 3000;
+  const delay = Math.min(1000 * Math.pow(2, attempt - 1) + Math.random() * 1000, 8000);
   setTimeout(() => {
     if (leaveInProgress) return;
     connectToHost(hostId);
@@ -389,7 +401,7 @@ function initPeer(isCreatingHost, targetHostId) {
 
   peer.on('open', id => {
     hideLoading();
-    deriveKey(isCreatingHost ? id : targetHostId).catch(() => {});
+    if (encryptionKey) deriveKey(encryptionKey).catch(() => {});
     const oldId = MY_ID;
     setMY_ID(id);
 
@@ -416,6 +428,8 @@ function initPeer(isCreatingHost, targetHostId) {
       startHeartbeat();
       const rcd = $('room-code-display');
       if (rcd) rcd.textContent = id;
+      const keyPart = encryptionKey ? '.' + encryptionKey : '';
+      window.location.hash = id + keyPart;
       roomMembers.set(MY_ID, { name: MY_NAME });
       renderUserList();
       updateParticipantCount();
@@ -423,6 +437,8 @@ function initPeer(isCreatingHost, targetHostId) {
       setRole('guest');
       const rcd = $('room-code-display');
       if (rcd) rcd.textContent = targetHostId;
+      const keyPart = encryptionKey ? '.' + encryptionKey : '';
+      window.location.hash = targetHostId + keyPart;
       connectToHost(targetHostId);
     }
   });

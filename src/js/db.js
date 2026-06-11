@@ -27,10 +27,10 @@ export async function dbGet(key) {
 export async function dbSet(key, val) {
   const db = await openDB();
   if (!db) return;
-  try { db.transaction('store', 'readwrite').objectStore('store').put(val, key); } catch (_) {}
+  try { db.transaction('store', 'readwrite').objectStore('store').put(val, key); } catch (e) { console.warn('IndexedDB put failed:', e); }
 }
 export async function dbDel(key) {
   const db = await openDB();
   if (!db) return;
-  try { db.transaction('store', 'readwrite').objectStore('store').delete(key); } catch (_) {}
+  try { db.transaction('store', 'readwrite').objectStore('store').delete(key); } catch (e) { console.warn('IndexedDB del failed:', e); }
 }

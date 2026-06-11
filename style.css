@@ -482,6 +482,10 @@ select.glass-input option{background:#121624;color:var(--text-main)}
 
 .connect-err{color:var(--danger);font-size:.8rem;margin-top:8px;text-align:center;animation:shakeError .4s var(--ease-smooth)}
 
+.feed-tabs{display:flex;gap:4px;padding:0 14px 8px;flex-shrink:0;overflow-x:auto;scrollbar-width:none}
+.feed-tab{background:var(--glass-bg);border:1px solid var(--glass-border);color:var(--text-dim);font-size:.72rem;font-weight:500;padding:4px 12px;border-radius:8px;cursor:pointer;white-space:nowrap;transition:all .25s var(--ease-smooth);flex-shrink:0}
+.feed-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+@media(hover:hover){.feed-tab:hover{background:var(--accent-dim);color:#fff;border-color:var(--accent-dim)}}
 .empty-feed{text-align:center;color:var(--text-dim);font-size:.85rem;margin:auto;padding:clamp(24px,6vw,48px) 16px}
 .empty-feed span{font-size:clamp(2rem,8vw,3rem);display:block;margin-bottom:14px;opacity:.7}
 
