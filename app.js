@@ -10,6 +10,9 @@ if ('serviceWorker' in navigator) {
 }
 let activeStreams = new Map();
 
+// ── Font Loading (prevent FOUC) ──────────────────────────────────────────────
+document.fonts?.ready.then(() => { document.body.classList.add('fonts-loaded'); });
+
 const CHUNK_SIZE = 256 * 1024;
 const STREAM_QUALITIES = {
   auto:  { label: 'Auto', w: 0, h: 0, fps: 30 },
@@ -71,6 +74,32 @@ const mimeIcon = t => {
   return { emoji: '📄', bg: 'rgba(255,255,255,0.04)' };
 };
 
+// ── Connection Bar ─────────────────────────────────────────────────────────
+function setConnBar(state, text) {
+  const bar = $('conn-bar');
+  if (!bar) return;
+  bar.className = 'room-enter room-enter-n1';
+  if (state === 'weak') bar.classList.add('weak');
+  else if (state === 'error') bar.classList.add('error');
+  const txt = bar.querySelector('#conn-bar-text');
+  if (txt) txt.textContent = text || 'Connected';
+}
+
+// ── Ripple Effect ──────────────────────────────────────────────────────────
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.btn-primary');
+  if (!btn || btn.disabled) return;
+  const rect = btn.getBoundingClientRect();
+  const ripple = document.createElement('span');
+  ripple.className = 'btn-ripple';
+  const size = Math.max(rect.width, rect.height);
+  ripple.style.width = ripple.style.height = size + 'px';
+  ripple.style.left = (e.clientX - rect.left - size / 2) + 'px';
+  ripple.style.top = (e.clientY - rect.top - size / 2) + 'px';
+  btn.appendChild(ripple);
+  ripple.addEventListener('animationend', () => ripple.remove());
+});
+
 // ── Loading / Drag Overlays ─────────────────────────────────────────────────
 function showLoading(text = 'Connecting to room...') {
   const overlay = $('loading-overlay');
@@ -98,9 +127,11 @@ function addSystemMessage(text, emoji = '📌') {
   const feed = $('file-feed');
   if (!feed) return;
   const div = document.createElement('div');
-  div.className = 'system-msg';
-  div.style.animation = 'slideUpFade .4s var(--ease-smooth) both';
-  div.innerHTML = `<div class="system-msg-inner">${emoji} ${escapeHTML(text)}</div>`;
+  div.className = 'system-msg feed-item';
+  const inner = document.createElement('div');
+  inner.className = 'system-msg-inner';
+  inner.textContent = emoji + ' ' + text;
+  div.appendChild(inner);
   feed.appendChild(div);
   feed.scrollTop = feed.scrollHeight;
 }
@@ -130,8 +161,14 @@ function showToast(message, type = 'info') {
   const t = document.createElement('div');
   t.className = `toast ${type}`;
   const emojiMap = { error: '❌', success: '✅', info: 'ℹ️' };
-  t.innerHTML = `<span class="toast-emoji">${emojiMap[type] || 'ℹ️'}</span> <div></div>`;
-  t.lastElementChild.textContent = message;
+  const emojiSpan = document.createElement('span');
+  emojiSpan.className = 'toast-emoji';
+  emojiSpan.textContent = emojiMap[type] || 'ℹ️';
+  t.appendChild(emojiSpan);
+  t.appendChild(document.createTextNode(' '));
+  const msgDiv = document.createElement('div');
+  msgDiv.textContent = message;
+  t.appendChild(msgDiv);
   container.appendChild(t);
   requestAnimationFrame(() => t.classList.add('show'));
   setTimeout(() => {
@@ -143,9 +180,13 @@ function showToast(message, type = 'info') {
 function updatePulse(state) {
   const pcd = $('peer-count-display');
   if (!pcd) return;
-  if (state === 'connecting') pcd.innerHTML = '<span class="status-pulse connecting"></span>Connecting...';
-  else if (state === 'offline') pcd.innerHTML = '<span class="status-pulse offline"></span>Offline';
-  else { pcd.innerHTML = '<span class="status-pulse"></span>'; pcd.appendChild(document.createTextNode(state)); }
+  pcd.textContent = '';
+  const dot = document.createElement('span');
+  dot.className = 'status-pulse' + (state === 'connecting' ? ' connecting' : state === 'offline' ? ' offline' : '');
+  pcd.appendChild(dot);
+  const label = document.createElement('span');
+  label.textContent = state === 'connecting' ? 'Connecting...' : state === 'offline' ? 'Offline' : String(state);
+  pcd.appendChild(label);
 }
 
 const avatarCache = new Map();
@@ -317,17 +358,27 @@ if ("Notification" in window) {
 }
 const notifBtn = $('notif-btn');
 if (notifBtn) {
-  notifBtn.addEventListener('click', () => {
-    if ("Notification" in window) {
-      Notification.requestPermission().then(p => {
-        if (p === "granted") {
-          notificationsEnabled = true;
-          notifBtn.textContent = '🔔';
-          showToast('Desktop notifications enabled!', 'success');
-        }
-      });
+  notifBtn.setAttribute('aria-pressed', 'false');
+  const toggleNotif = () => {
+    if (!("Notification" in window)) { showToast('Notifications not supported.', 'error'); return; }
+    if (Notification.permission === 'granted') {
+      notificationsEnabled = !notificationsEnabled;
+      notifBtn.textContent = notificationsEnabled ? '🔔' : '🔕';
+      notifBtn.setAttribute('aria-pressed', String(notificationsEnabled));
+      showToast(notificationsEnabled ? 'Notifications enabled!' : 'Notifications muted.', 'info');
+      return;
     }
-  });
+    Notification.requestPermission().then(p => {
+      if (p === 'granted') {
+        notificationsEnabled = true;
+        notifBtn.textContent = '🔔';
+        notifBtn.setAttribute('aria-pressed', 'true');
+        showToast('Desktop notifications enabled!', 'success');
+      }
+    });
+  };
+  notifBtn.addEventListener('click', toggleNotif);
+  notifBtn.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleNotif(); } });
 }
 function notify(title, body) {
   flashTabTitle(title);
@@ -719,9 +770,11 @@ function initPeer(isCreatingHost, targetHostId) {
 
     hide('home-view');
     show('room-view');
+    setTimeout(() => { const ci = $('chat-input'); if (ci) ci.focus(); }, 300);
     
     if (isCreatingHost) {
       role = 'host';
+      startHeartbeat();
       const rcd = $('room-code-display');
       if (rcd) rcd.textContent = id;
       roomMembers.set(MY_ID, { name: MY_NAME });
@@ -778,6 +831,18 @@ function initPeer(isCreatingHost, targetHostId) {
   });
 }
 
+// ── Rate Limiter ──────────────────────────────────────────────────────────
+const joinAttempts = new Map();
+function checkRateLimit(peerId) {
+  const now = Date.now();
+  const attempts = joinAttempts.get(peerId) || [];
+  const recent = attempts.filter(t => now - t < 30000);
+  if (recent.length >= 5) return false;
+  recent.push(now);
+  joinAttempts.set(peerId, recent);
+  return true;
+}
+
 // ── Host Logic ───────────────────────────────────────────────────────────────
 function setupHostControlConnection(conn) {
   conn.on('open', () => {
@@ -788,6 +853,7 @@ function setupHostControlConnection(conn) {
 
   conn.on('data', data => {
     if (data.type === 'hello') {
+      if (!checkRateLimit(conn.peer)) { conn.close(); return; }
       roomMembers.set(conn.peer, { name: data.name });
       updateParticipantCount();
       renderUserList();
@@ -844,6 +910,9 @@ function setupHostControlConnection(conn) {
         }
       }
     }
+    else if (data.type === 'pong') {
+      // heartbeat response — no action needed, connection is alive
+    }
     else if (data.type === 'request_stream') {
       // Guest A wants to stream a video file.
       const file = allKnownFiles.get(data.fileId);
@@ -878,6 +947,18 @@ function setupHostControlConnection(conn) {
     updateParticipantCount();
   });
 }
+
+// ── Heartbeat ─────────────────────────────────────────────────────────────
+let heartbeatTimer = null;
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    for (const [id, c] of guestConns) {
+      if (c.open) { try { c.send({ type: 'ping' }); } catch (_) {} }
+    }
+  }, 10000);
+}
+function stopHeartbeat() { if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; } }
 
 function broadcast(msg, excludePeerId = null) {
   for (const [id, c] of guestConns) {
@@ -917,6 +998,7 @@ function connectToHost(hostId) {
   hostConn.on('open', () => {
     clearTimeout(connectTimer);
     updatePulse('Connected to room');
+    setConnBar('ok', 'Connected');
     showToast("Joined room successfully", "success");
     playSound('chime');
     hostConn.send({ type: 'hello', name: MY_NAME });
@@ -962,6 +1044,9 @@ function connectToHost(hostId) {
       allKnownFiles.set(data.file.id, data.file);
       addFileToFeed(data.file);
     }
+    else if (data.type === 'ping') {
+      try { hostConn.send({ type: 'pong' }); } catch (_) {}
+    }
     else if (data.type === 'peer_wants_file') {
       // The host says someone wants a file I own.
       initiateFileTransfer(data.requesterId, data.fileId);
@@ -975,11 +1060,13 @@ function connectToHost(hostId) {
   hostConn.on('error', err => {
     showToast("Connection to room failed: " + (err.message || "Network error"), "error");
     updatePulse('offline');
+    setConnBar('error', 'Connection lost');
   });
 
   hostConn.on('close', () => {
     if (leaveInProgress) return;
     updatePulse('offline');
+    setConnBar('error', 'Disconnected');
     showToast("Room host disconnected.", "error");
     setTimeout(() => {
       if (leaveInProgress) return;
@@ -1070,9 +1157,7 @@ function addFileToFeed(fileMeta) {
   addSystemMessage(`${mimeEmoji(fileMeta.mime)} ${fileMeta.name} shared by ${ownerName}`, '');
 
   const div = document.createElement('div');
-  div.className = 'file-chip' + (isMine ? ' mine' : '');
-
-  div.style.animation = 'slideUpFade .5s var(--ease-smooth) both';
+  div.className = 'file-chip feed-item' + (isMine ? ' mine' : '');
 
   div.innerHTML = getFileChipHTML(fileMeta, isMine, av);
 
@@ -1204,31 +1289,101 @@ function showTypingIndicator(id) {
   typingTimer = setTimeout(() => { ind.textContent = ''; }, 2000);
 }
 
-function parseMarkdown(text) {
-  // Escape HTML first, but protect & in URLs by unescaping them back in hrefs
-  let h = escapeHTML(text);
-  // Bold (must do before italic to avoid overlapping)
-  h = h.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-  // Italic
-  h = h.replace(/\*(.*?)\*/g, '<em>$1</em>');
-  // Links (un-escape &amp; back to & in href)
-  h = h.replace(/(https?:\/\/[^\s<]+)/g, (m) => {
-    const clean = m.replace(/&amp;/g, '&');
-    return `<a href="${clean}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;">${m}</a>`;
-  });
-  // Code block
-  h = h.replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(0,0,0,0.3);padding:8px;border-radius:6px;margin:4px 0;font-family:\'JetBrains Mono\',monospace;"><code>$1</code></pre>');
-  // Inline code
-  h = h.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.3);padding:2px 4px;border-radius:4px;font-family:\'JetBrains Mono\',monospace;">$1</code>');
-  return h;
+function renderMarkdownToDOM(text) {
+  const frag = document.createDocumentFragment();
+  if (!text) return frag;
+  const escaped = escapeHTML(text);
+  let i = 0;
+  function flush(buf) { if (buf.length) { frag.appendChild(document.createTextNode(buf.join(''))); buf.length = 0; } }
+  function build(buf) {
+    const stack = [[frag, buf]];
+    while (stack.length) {
+      const [parent, arr] = stack.pop();
+      let j = 0;
+      let textBuf = [];
+      while (j < arr.length) {
+        const item = arr[j];
+        if (typeof item === 'string') { textBuf.push(item); j++; continue; }
+        flush(textBuf);
+        const el = item.el;
+        if (item.children) stack.push([el, item.children]);
+        parent.appendChild(el);
+        j++;
+      }
+      flush(textBuf);
+      parent.normalize();
+    }
+  }
+
+  let buf = [];
+  while (i < escaped.length) {
+    if (escaped[i] === '*' && escaped[i+1] === '*') {
+      const end = escaped.indexOf('**', i+2);
+      if (end !== -1) {
+        flush(buf);
+        const strong = document.createElement('strong');
+        strong.textContent = escaped.slice(i+2, end);
+        frag.appendChild(strong);
+        i = end + 2; continue;
+      }
+    }
+    if (escaped[i] === '*' && escaped[i+1] !== '*') {
+      const end = escaped.indexOf('*', i+1);
+      if (end !== -1) {
+        flush(buf);
+        const em = document.createElement('em');
+        em.textContent = escaped.slice(i+1, end);
+        frag.appendChild(em);
+        i = end + 1; continue;
+      }
+    }
+    if (escaped[i] === '`' && escaped[i+1] === '`' && escaped[i+2] === '`') {
+      const end = escaped.indexOf('```', i+3);
+      if (end !== -1) {
+        flush(buf);
+        const pre = document.createElement('pre');
+        pre.style.cssText = 'background:rgba(0,0,0,0.3);padding:8px;border-radius:6px;margin:4px 0;font-family:\'JetBrains Mono\',monospace';
+        const code = document.createElement('code');
+        code.style.cssText = "font-family:'JetBrains Mono',monospace";
+        code.textContent = escaped.slice(i+3, end);
+        pre.appendChild(code);
+        frag.appendChild(pre);
+        i = end + 3; continue;
+      }
+    }
+    if (escaped[i] === '`') {
+      const end = escaped.indexOf('`', i+1);
+      if (end !== -1) {
+        flush(buf);
+        const code = document.createElement('code');
+        code.style.cssText = "background:rgba(0,0,0,0.3);padding:2px 4px;border-radius:4px;font-family:'JetBrains Mono',monospace";
+        code.textContent = escaped.slice(i+1, end);
+        frag.appendChild(code);
+        i = end + 1; continue;
+      }
+    }
+    const urlMatch = escaped.slice(i).match(/^(https?:\/\/[^\s<]+)/);
+    if (urlMatch) {
+      flush(buf);
+      const a = document.createElement('a');
+      a.href = urlMatch[0].replace(/&amp;/g, '&');
+      a.target = '_blank'; a.rel = 'noopener';
+      a.style.cssText = 'color:var(--accent);text-decoration:underline';
+      a.textContent = urlMatch[0];
+      frag.appendChild(a);
+      i += urlMatch[0].length; continue;
+    }
+    buf.push(escaped[i]);
+    i++;
+  }
+  flush(buf);
+  return frag;
 }
 
 function addChatToFeed(msg) {
   hide('empty-feed-msg');
   const feed = $('file-feed');
   const isMine = msg.senderId === MY_ID;
-  
-  // Use senderName for UI, fallback to senderId if missing
   const displayName = msg.senderName || msg.senderId;
   const av = getAvatarParams(msg.senderId);
 
@@ -1238,30 +1393,35 @@ function addChatToFeed(msg) {
   }
 
   const div = document.createElement('div');
-  div.style.display = 'flex';
-  div.style.flexDirection = isMine ? 'row-reverse' : 'row';
-  div.style.alignItems = 'flex-end';
-  div.style.gap = '8px';
-  div.style.marginBottom = '14px';
-  div.style.animation = 'slideUpFade .4s var(--ease-smooth) both';
+  div.className = 'feed-item';
+  div.style.cssText = 'display:flex;flex-direction:' + (isMine ? 'row-reverse' : 'row') + ';align-items:flex-end;gap:8px;margin-bottom:14px';
 
   const timeStr = new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  
-  const inner = `
-    <div class="avatar" style="background: ${av.bg}; width: 28px; height: 28px; font-size: .6rem;">${av.letter}</div>
-    <div style="display:flex; flex-direction:column; align-items:${isMine ? 'flex-end' : 'flex-start'}; max-width:80%;">
-      <span class="chat-meta">
-        <span class="chat-meta-name">${isMine ? 'You' : escapeHTML(displayName)}</span>
-        <span>·</span>
-        <span>${timeStr}</span>
-      </span>
-      <div class="chat-bubble ${isMine ? 'chat-bubble-own' : 'chat-bubble-other'}"
-           style="color:#fff; padding:10px 14px; border-radius:14px; word-wrap:break-word; font-size:.95rem; line-height:1.5;">
-        ${parseMarkdown(msg.text)}
-      </div>
-    </div>
-  `;
-  div.innerHTML = inner;
+
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar';
+  avatar.style.cssText = 'background:' + av.bg + ';width:28px;height:28px;font-size:.6rem';
+  avatar.textContent = av.letter;
+  div.appendChild(avatar);
+
+  const msgCol = document.createElement('div');
+  msgCol.style.cssText = 'display:flex;flex-direction:column;align-items:' + (isMine ? 'flex-end' : 'flex-start') + ';max-width:80%';
+
+  const meta = document.createElement('span');
+  meta.className = 'chat-meta';
+  const metaName = document.createElement('span');
+  metaName.className = 'chat-meta-name';
+  metaName.textContent = isMine ? 'You' : displayName;
+  meta.appendChild(metaName);
+  meta.appendChild(document.createTextNode(' · ' + timeStr));
+  msgCol.appendChild(meta);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble ' + (isMine ? 'chat-bubble-own' : 'chat-bubble-other');
+  bubble.style.cssText = 'color:#fff;padding:10px 14px;border-radius:14px;word-wrap:break-word;font-size:.95rem;line-height:1.5';
+  bubble.appendChild(renderMarkdownToDOM(msg.text));
+  msgCol.appendChild(bubble);
+  div.appendChild(msgCol);
   
   feed.appendChild(div);
   feed.scrollTop = feed.scrollHeight;
@@ -1277,6 +1437,8 @@ function initiateFileTransfer(targetPeerId, fileId) {
   const resetUploadBtn = () => {
     const btn = $(`btn-ul-${fileId}`);
     if (btn) { btn.classList.remove('downloading', 'done'); btn.textContent = 'Upload'; btn.disabled = false; }
+    const chipEl = btn?.closest('.file-chip');
+    if (chipEl) chipEl.classList.remove('downloading-glow');
   };
 
   let aborted = false;
@@ -1331,15 +1493,18 @@ function initiateFileTransfer(targetPeerId, fileId) {
         offset += e.target.result.byteLength;
         
         const pct = Math.round(offset / file.size * 100);
+        const chipEl = btn?.closest('.file-chip');
         if (btn) {
           if (!btn.classList.contains('downloading') && pct < 100) {
             btn.classList.add('downloading');
+            if (chipEl) chipEl.classList.add('downloading-glow');
           }
           btn.textContent = `${pct}%`;
           if (pct === 100) {
             btn.classList.remove('downloading');
             btn.classList.add('done');
             btn.textContent = '✅';
+            if (chipEl) chipEl.classList.remove('downloading-glow');
           }
         }
 
@@ -1469,11 +1634,13 @@ function handleIncomingFileTransfer(conn, fileId) {
   if (!fileMeta) { conn.close(); return; }
 
   const btn      = $(`btn-dl-${fileId}`);
+  const chipEl   = btn?.closest('.file-chip');
   const progWrap = $(`prog-wrap-${fileId}`);
   const progFill = $(`prog-fill-${fileId}`);
   const progPct  = $(`prog-pct-${fileId}`);
   const progSpd  = $(`prog-speed-${fileId}`);
   const progEta  = $(`prog-eta-${fileId}`);
+  if (chipEl) chipEl.classList.add('downloading-glow');
 
   // Clear pending download timer and prevent timeout from firing
   const pending = pendingDownloads.get(fileId);
@@ -1536,6 +1703,7 @@ function handleIncomingFileTransfer(conn, fileId) {
       const elapsedFinal = (Date.now() - startTime) / 1000;
       const finalSpeedBps = elapsedFinal > 0 ? receivedBytes / elapsedFinal : 0;
 
+      if (chipEl) chipEl.classList.remove('downloading-glow');
       if (progFill) progFill.style.width = '100%';
       if (progPct)  progPct.textContent  = '100%';
       if (progSpd)  progSpd.textContent  = fmtSpeed(finalSpeedBps);
@@ -1621,14 +1789,33 @@ function renderUserList() {
     const div = document.createElement('div');
     div.className = 'participant-row';
     
-    div.innerHTML = `
-      <div class="avatar" style="background: ${av.bg}; width: 30px; height: 30px; font-size: .7rem;">${av.letter}</div>
-      <div style="flex:1;min-width:0">
-        <div class="participant-name">${escapeHTML(data.name)}</div>
-      </div>
-      ${isMe ? '<span class="participant-tag you">You</span>' : ''}
-      ${role === 'host' && id === MY_ID ? '<span class="participant-tag host">Host</span>' : ''}
-    `;
+    const dot = document.createElement('span');
+    dot.className = 'status-dot';
+    div.appendChild(dot);
+    const avEl = document.createElement('div');
+    avEl.className = 'avatar';
+    avEl.style.cssText = 'background:' + av.bg + ';width:30px;height:30px;font-size:.7rem';
+    avEl.textContent = av.letter;
+    div.appendChild(avEl);
+    const nameWrap = document.createElement('div');
+    nameWrap.style.cssText = 'flex:1;min-width:0';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'participant-name';
+    nameEl.textContent = data.name;
+    nameWrap.appendChild(nameEl);
+    div.appendChild(nameWrap);
+    if (isMe) {
+      const tag = document.createElement('span');
+      tag.className = 'participant-tag you';
+      tag.textContent = 'You';
+      div.appendChild(tag);
+    }
+    if (role === 'host' && id === MY_ID) {
+      const tag = document.createElement('span');
+      tag.className = 'participant-tag host';
+      tag.textContent = 'Host';
+      div.appendChild(tag);
+    }
     list.appendChild(div);
   });
 }
