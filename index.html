@@ -4,32 +4,34 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <meta name="description" content="Direct P2P Sharing Rooms. No servers. No limits. Share files and chat securely."/>
-  <meta name="theme-color" content="#050508"/>
+  <meta name="theme-color" content="#07080b"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <title>PeerDrop — Sharing Room</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Playfair+Display:wght@700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet"/>
-  <link rel="manifest" href="manifest.json" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet"/>
+  <link rel="manifest" href="manifest.json"/>
   <link rel="stylesheet" href="style.css"/>
-  <style>
-    .home-section {
-      padding-bottom: 24px;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-    }
-    .home-section:last-child {
-      border-bottom: none;
-      padding-bottom: 0;
-    }
-    .home-section .card-label {
-      margin-bottom: 12px;
-    }
-  </style>
 </head>
 <body>
 <div id="toast-container" role="status" aria-live="polite"></div>
 <canvas id="particles" aria-hidden="true"></canvas>
+
+<div id="loading-overlay">
+  <div class="loading-spinner"></div>
+  <div class="loading-text">Connecting to room...</div>
+  <div class="loading-sub">Establishing secure peer connection</div>
+</div>
+
+<div id="drag-overlay">
+  <div id="drag-overlay-inner">
+    <div id="drag-overlay-icon">📁</div>
+    <div id="drag-overlay-text">Drop files to share</div>
+    <div id="drag-overlay-hint">Any file type, up to 2GB</div>
+  </div>
+</div>
 
 <main id="home-view" class="view">
   <header class="site-header animate-enter-1">
@@ -39,7 +41,7 @@
     </div>
   </header>
 
-  <p class="animate-enter-2" style="text-align:center;color:var(--text-dim);margin-bottom:20px;line-height:1.6">
+  <p class="tagline animate-enter-2">
     Direct P2P Sharing Rooms.<br/>No servers. No limits.
   </p>
 
@@ -51,9 +53,7 @@
 
     <div class="home-section">
       <p class="card-label">START A NEW ROOM</p>
-      <button id="btn-create-room" class="btn-primary" style="width:100%;padding:16px;font-size:1.1rem">
-        + Create Room
-      </button>
+      <button id="btn-create-room" class="btn-primary" style="width:100%;padding:16px;font-size:1.1rem">+ Create Room</button>
     </div>
 
     <div class="home-section">
@@ -69,29 +69,31 @@
 
 <main id="room-view" class="view room-layout" hidden>
   <aside class="glass-card sidebar-card" aria-label="Room members">
-    <h3 class="card-label">ROOM MEMBERS</h3>
+    <h3 class="card-label">👥 Members</h3>
     <div id="user-list" role="list"></div>
   </aside>
 
   <div class="main-chat-area">
-    <header class="glass-card room-header" role="banner">
+    <header class="room-header" role="banner">
       <div class="room-header-left">
         <span class="logo-icon" aria-hidden="true">⬡</span>
         <div>
-          <h1 style="font-size:1.1rem;font-weight:700">Room: <span id="room-code-display" class="mono" style="color:var(--accent)">---</span></h1>
-          <p id="peer-count-display" style="font-size:0.75rem;color:var(--text-dim)"><span class="status-pulse connecting"></span>Connecting...</p>
+          <h1 style="font-size:1.05rem;font-weight:700">Room: <span id="room-code-display" class="mono" style="color:var(--accent)">---</span></h1>
+          <p id="peer-count-display" style="font-size:0.7rem;color:var(--text-dim);display:flex;align-items:center;gap:4px;margin-top:2px">
+            <span class="status-pulse connecting"></span>Connecting...
+          </p>
         </div>
       </div>
       <div class="room-header-right">
         <button id="btn-copy-link" class="btn-ghost-sm">Copy Link</button>
-        <button id="btn-leave-room" class="btn-ghost-sm" style="color:#f87171;border-color:rgba(248,113,113,0.3)">Leave</button>
+        <button id="btn-leave-room" class="btn-ghost-sm" style="color:var(--danger);border-color:rgba(239,68,68,0.2);">Leave</button>
       </div>
     </header>
 
     <div class="glass-card feed-card">
       <h2 class="card-label">
         <span>Room Feed</span>
-        <span id="notif-btn" tabindex="0" role="button" aria-label="Toggle desktop notifications" style="cursor:pointer;font-size:1.2rem">🔕</span>
+        <span id="notif-btn" class="notif-btn" tabindex="0" role="button" aria-label="Toggle desktop notifications">🔕</span>
       </h2>
       <div id="file-feed" role="log" aria-live="polite">
         <div class="empty-feed" id="empty-feed-msg">
@@ -99,13 +101,14 @@
           Welcome to the room.<br/>Drop a file or paste an image below.
         </div>
       </div>
+      <button id="scroll-bottom-btn" aria-label="Scroll to bottom">↓</button>
     </div>
 
-    <p id="typing-indicator" style="font-size:0.75rem;color:var(--text-dim);margin-left:12px;height:16px" aria-live="polite" aria-atomic="true"></p>
+    <p id="typing-indicator" style="font-size:0.7rem;color:var(--text-muted);margin-left:14px;height:18px;transition:color .3s" aria-live="polite" aria-atomic="true"></p>
 
-    <div class="glass-card chat-input-bar">
-      <button id="btn-attach" class="btn-ghost-sm" style="font-size:1.4rem;padding:6px 14px;border:none;cursor:pointer" title="Send File" aria-label="Attach File">📎</button>
-      <button id="btn-share-screen" class="btn-ghost-sm" style="font-size:1.4rem;padding:6px 14px;border:none;cursor:pointer" title="Share Screen" aria-label="Share screen">🖥️</button>
+    <div class="chat-input-bar">
+      <button id="btn-attach" class="btn-ghost-sm" title="Send File" aria-label="Attach File">📎</button>
+      <button id="btn-share-screen" class="btn-ghost-sm" title="Share Screen" aria-label="Share screen">🖥️</button>
       <input id="room-file-input" type="file" hidden multiple aria-hidden="true"/>
       <input id="chat-input" type="text" class="glass-input" placeholder="Type a message, drop a file, or paste (CTRL+V)..." autocomplete="off" aria-label="Chat message"/>
       <button id="btn-send-chat" class="btn-primary" style="padding:10px 24px">Send</button>

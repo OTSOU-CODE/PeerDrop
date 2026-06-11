@@ -11,6 +11,12 @@ if ('serviceWorker' in navigator) {
 let activeStreams = new Map();
 
 const CHUNK_SIZE = 256 * 1024;
+const STREAM_QUALITIES = {
+  auto:  { label: 'Auto', w: 0, h: 0, fps: 30 },
+  high:  { label: '720p', w: 1280, h: 720, fps: 30 },
+  medium:{ label: '480p', w: 854, h: 480, fps: 24 },
+  low:   { label: '360p', w: 640, h: 360, fps: 24 }
+};
 
 // ── DOM Helpers ──────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -54,6 +60,68 @@ const mimeEmoji = t => {
   if (t.includes('zip')||t.includes('rar')) return '📦';
   return '📄';
 };
+const mimeIcon = t => {
+  if (!t) return { emoji: '📁', bg: 'rgba(255,255,255,0.04)' };
+  if (t.startsWith('image/')) return { emoji: '🖼️', bg: 'rgba(99,102,241,0.12)' };
+  if (t.startsWith('video/')) return { emoji: '🎬', bg: 'rgba(168,85,247,0.12)' };
+  if (t.startsWith('audio/')) return { emoji: '🎵', bg: 'rgba(16,185,129,0.12)' };
+  if (t.includes('zip')||t.includes('rar')||t.includes('tar')||t.includes('gz')) return { emoji: '📦', bg: 'rgba(245,158,11,0.12)' };
+  if (t.includes('pdf')) return { emoji: '📕', bg: 'rgba(239,68,68,0.12)' };
+  if (t.includes('text')||t.includes('json')||t.includes('javascript')) return { emoji: '📝', bg: 'rgba(6,182,212,0.12)' };
+  return { emoji: '📄', bg: 'rgba(255,255,255,0.04)' };
+};
+
+// ── Loading / Drag Overlays ─────────────────────────────────────────────────
+function showLoading(text = 'Connecting to room...') {
+  const overlay = $('loading-overlay');
+  if (!overlay) return;
+  const txt = overlay.querySelector('.loading-text');
+  if (txt) txt.textContent = text;
+  overlay.classList.add('show');
+}
+function hideLoading() {
+  const overlay = $('loading-overlay');
+  if (overlay) overlay.classList.remove('show');
+}
+function showDragOverlay() {
+  const overlay = $('drag-overlay');
+  if (overlay) overlay.classList.add('show');
+}
+function hideDragOverlay() {
+  const overlay = $('drag-overlay');
+  if (overlay) overlay.classList.remove('show');
+}
+
+// ── System Message ──────────────────────────────────────────────────────────
+function addSystemMessage(text, emoji = '📌') {
+  hide('empty-feed-msg');
+  const feed = $('file-feed');
+  if (!feed) return;
+  const div = document.createElement('div');
+  div.className = 'system-msg';
+  div.style.animation = 'slideUpFade .4s var(--ease-smooth) both';
+  div.innerHTML = `<div class="system-msg-inner">${emoji} ${escapeHTML(text)}</div>`;
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+// ── Scroll-to-bottom ────────────────────────────────────────────────────────
+const scrollBtn = $('scroll-bottom-btn');
+if (scrollBtn) {
+  scrollBtn.addEventListener('click', () => {
+    const feed = $('file-feed');
+    if (feed) { feed.scrollTop = feed.scrollHeight; }
+  });
+}
+// Feed scroll listener (delegated)
+document.addEventListener('scroll', e => {
+  if (e.target.id !== 'file-feed') return;
+  const btn = $('scroll-bottom-btn');
+  if (!btn) return;
+  const threshold = 120;
+  const isNearBottom = e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < threshold;
+  btn.classList.toggle('show', !isNearBottom);
+}, true);
 
 // ── UI Enhancements ──────────────────────────────────────────────────────────
 function showToast(message, type = 'info') {
@@ -61,13 +129,14 @@ function showToast(message, type = 'info') {
   if (!container) return;
   const t = document.createElement('div');
   t.className = `toast ${type}`;
-  t.innerHTML = `<span style="font-size:1.2rem">${type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️'}</span> <div></div>`;
+  const emojiMap = { error: '❌', success: '✅', info: 'ℹ️' };
+  t.innerHTML = `<span class="toast-emoji">${emojiMap[type] || 'ℹ️'}</span> <div></div>`;
   t.lastElementChild.textContent = message;
   container.appendChild(t);
-  setTimeout(() => t.classList.add('show'), 10);
+  requestAnimationFrame(() => t.classList.add('show'));
   setTimeout(() => {
     t.classList.remove('show');
-    setTimeout(() => t.remove(), 400);
+    setTimeout(() => t.remove(), 500);
   }, 4000);
 }
 
@@ -94,8 +163,12 @@ function getAvatarParams(id) {
 // ── Audio Synthesizer ────────────────────────────────────────────────────────
 let audioCtx = null;
 function initAudio() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { return; }
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
 }
 function playSound(type) {
   initAudio();
@@ -250,7 +323,7 @@ if (notifBtn) {
         if (p === "granted") {
           notificationsEnabled = true;
           notifBtn.textContent = '🔔';
-          showToast("Desktop notifications enabled!", "success");
+          showToast('Desktop notifications enabled!', 'success');
         }
       });
     }
@@ -340,6 +413,7 @@ function cleanupPeerResources() {
   avatarCache.clear();
   if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
   if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
+  hideLoading(); hideDragOverlay();
   role = null;
   leaveInProgress = true;
 }
@@ -373,12 +447,21 @@ const roomView = $('room-view');
 const fileInput = $('room-file-input');
 const chatInput = $('chat-input');
 
+// Hide drag overlay when files leave the browser
+document.addEventListener('dragend', () => hideDragOverlay());
+document.addEventListener('dragleave', e => {
+  if (!e.relatedTarget || e.relatedTarget === document.documentElement) hideDragOverlay();
+});
+
 // Global drop zone for the room
-roomView.addEventListener('dragover', e => { e.preventDefault(); roomView.classList.add('drag-active'); });
-roomView.addEventListener('dragleave', () => { roomView.classList.remove('drag-active'); });
+roomView.addEventListener('dragover', e => { e.preventDefault(); roomView.classList.add('drag-active'); showDragOverlay(); });
+roomView.addEventListener('dragleave', e => {
+  if (e.relatedTarget && roomView.contains(e.relatedTarget)) return;
+  roomView.classList.remove('drag-active'); hideDragOverlay();
+});
 roomView.addEventListener('drop', e => {
   e.preventDefault();
-  roomView.classList.remove('drag-active');
+  roomView.classList.remove('drag-active'); hideDragOverlay();
   if (e.dataTransfer.files.length > 0) handleFilesSelected(e.dataTransfer.files);
 });
 
@@ -510,21 +593,78 @@ function addVideoStream(peerId, stream, isLocal, isVideoFile = false) {
   if (!video) {
     const wrap = document.createElement('div');
     wrap.id = `video-wrap-${peerId}`;
-    wrap.style = "position:relative;margin-bottom:15px;border-radius:12px;overflow:hidden;border:1px solid var(--accent-dim);background:#000;";
+    wrap.className = 'video-wrap';
     
     video = document.createElement('video');
     video.id = `video-${peerId}`;
-    video.style = "width:100%;display:block;";
     video.autoplay = true;
     video.playsInline = true;
+    video.style.width = '100%';
+    video.style.display = 'block';
     if (isLocal) video.muted = true;
     else if (isVideoFile) video.controls = true;
     
     const label = document.createElement('div');
-    label.style = "position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:6px;font-size:0.75rem;color:#fff;pointer-events:none;";
+    label.className = 'video-label';
     const mem = roomMembers.get(peerId);
     const name = mem ? mem.name : peerId.substring(0, 8);
-    label.textContent = isLocal ? "Your Screen" : (isVideoFile ? `Streaming: ${name}` : `${name}'s Screen`);
+    label.textContent = isLocal ? 'Your Screen' : (isVideoFile ? `Stream: ${name}` : `${name}'s Screen`);
+
+    // Stream controls for non-local streams
+    if (!isLocal) {
+      const controls = document.createElement('div');
+      controls.style.cssText = 'position:absolute;top:8px;right:8px;display:flex;gap:6px;opacity:0;transition:opacity .3s ease';
+      wrap.addEventListener('mouseenter', () => controls.style.opacity = '1');
+      wrap.addEventListener('mouseleave', () => { if (!document.pictureInPictureElement) controls.style.opacity = '0'; });
+      
+      const makeBtn = (icon, title, fn) => {
+        const b = document.createElement('button');
+        b.textContent = icon;
+        b.title = title;
+        b.style.cssText = 'width:30px;height:30px;border:none;border-radius:6px;background:rgba(0,0,0,0.6);color:#fff;cursor:pointer;font-size:.85rem;transition:all .2s;backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.08)';
+        b.addEventListener('mouseenter', () => b.style.background = 'rgba(255,255,255,0.15)');
+        b.addEventListener('mouseleave', () => b.style.background = 'rgba(0,0,0,0.6)');
+        b.addEventListener('click', fn);
+        return b;
+      };
+
+      // PiP button
+      if ('pictureInPictureEnabled' in document) {
+        const pipBtn = makeBtn('⊞', 'Picture-in-Picture', async () => {
+          try {
+            if (document.pictureInPictureElement) {
+              await document.exitPictureInPicture();
+            } else {
+              await video.requestPictureInPicture();
+            }
+          } catch (_) {}
+        });
+        controls.appendChild(pipBtn);
+      }
+
+      // Fullscreen button
+      const fsBtn = makeBtn('⛶', 'Fullscreen', () => {
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        } else {
+          wrap.requestFullscreen().catch(() => {});
+        }
+      });
+      controls.appendChild(fsBtn);
+
+      // Stop button (video streams only, not screen shares)
+      if (isVideoFile) {
+        const stopBtn = makeBtn('⏹', 'Stop Stream', () => {
+          const call = activeCalls.get(peerId);
+          if (call) { try { call.close(); } catch(_) {} activeCalls.delete(peerId); }
+          removeVideoStream(peerId);
+        });
+        stopBtn.style.color = '#ef4444';
+        controls.appendChild(stopBtn);
+      }
+
+      wrap.appendChild(controls);
+    }
 
     wrap.appendChild(video);
     wrap.appendChild(label);
@@ -532,7 +672,7 @@ function addVideoStream(peerId, stream, isLocal, isVideoFile = false) {
     hide('empty-feed-msg');
   }
   video.srcObject = stream;
-  video.play().catch(() => {}); // Silently handle autoplay restrictions
+  video.play().catch(() => {});
 }
 
 function removeVideoStream(peerId) {
@@ -555,9 +695,12 @@ function initPeer(isCreatingHost, targetHostId) {
   $('btn-create-room').textContent = 'Starting...';
   $('btn-join-room').textContent = 'Joining...';
 
+  showLoading(isCreatingHost ? 'Creating room...' : 'Joining room...');
+
   peer = new Peer(isCreatingHost ? MY_ID : null, PEER_CONFIG);
 
   peer.on('open', id => {
+    hideLoading();
     const oldId = MY_ID;
     MY_ID = id;
 
@@ -620,6 +763,7 @@ function initPeer(isCreatingHost, targetHostId) {
   });
 
   peer.on('error', err => {
+    hideLoading();
     if (role === null) {
       const bcr = $('btn-create-room');
       if (bcr) bcr.textContent = '+ Create Room';
@@ -659,6 +803,7 @@ function setupHostControlConnection(conn) {
         members: Array.from(roomMembers.entries()).map(([id, val]) => ({id, name: val.name}))
       });
       
+      addSystemMessage(`${data.name} joined the room`, '👋');
       showToast(`${escapeHTML(data.name)} joined the room.`, "info");
       playSound('chime');
     }
@@ -705,14 +850,15 @@ function setupHostControlConnection(conn) {
       if (!file) return;
 
       if (file.ownerId === MY_ID) {
-        initiateVideoStreaming(data.requesterId, file.id);
+        initiateVideoStreaming(data.requesterId, file.id, data.quality || 'auto');
       } else {
         const ownerConn = guestConns.get(file.ownerId);
         if (ownerConn) {
           ownerConn.send({
             type: 'peer_wants_stream',
             fileId: file.id,
-            requesterId: data.requesterId
+            requesterId: data.requesterId,
+            quality: data.quality || 'auto'
           });
         }
       }
@@ -726,6 +872,7 @@ function setupHostControlConnection(conn) {
       roomMembers.delete(conn.peer);
       broadcast({ type: 'member_left', id: conn.peer });
       renderUserList();
+      addSystemMessage(`${leftMem.name} left the room`, '👋');
       showToast(`${escapeHTML(leftMem.name)} left the room.`, "info");
     }
     updateParticipantCount();
@@ -791,13 +938,17 @@ function connectToHost(hostId) {
       roomMembers.set(data.member.id, { name: data.member.name });
       renderUserList();
       if (data.member.id !== MY_ID) {
+        addSystemMessage(`${data.member.name} joined the room`, '👋');
         showToast(`${escapeHTML(data.member.name)} joined the room.`, "info");
         playSound('pop');
       }
     }
     else if (data.type === 'member_left') {
       const mem = roomMembers.get(data.id);
-      if (mem) showToast(`${escapeHTML(mem.name)} left the room.`, "info");
+      if (mem) {
+        addSystemMessage(`${mem.name} left the room`, '👋');
+        showToast(`${escapeHTML(mem.name)} left the room.`, "info");
+      }
       roomMembers.delete(data.id);
       renderUserList();
     }
@@ -817,7 +968,7 @@ function connectToHost(hostId) {
     }
     else if (data.type === 'peer_wants_stream') {
       // The host says someone wants to stream my video file.
-      initiateVideoStreaming(data.requesterId, data.fileId);
+      initiateVideoStreaming(data.requesterId, data.fileId, data.quality || 'auto');
     }
   });
 
@@ -910,33 +1061,38 @@ function addFileToFeed(fileMeta) {
   const feed = $('file-feed');
   const isMine = peer && fileMeta.ownerId === peer.id;
   const av = getAvatarParams(fileMeta.ownerId);
+  const owner = roomMembers.get(fileMeta.ownerId);
+  const ownerName = owner ? owner.name : (isMine ? MY_NAME : 'Someone');
 
   if (!isMine) notify("New File Shared", fileMeta.name);
 
+  // System message announcing the share
+  addSystemMessage(`${mimeEmoji(fileMeta.mime)} ${fileMeta.name} shared by ${ownerName}`, '');
+
   const div = document.createElement('div');
-  div.className = 'file-chip';
-  div.style.background = isMine ? 'rgba(59,130,246,0.1)' : 'rgba(255,255,255,0.04)';
-  div.style.border = isMine ? '1px solid rgba(59,130,246,0.3)' : '1px solid rgba(255,255,255,0.07)';
+  div.className = 'file-chip' + (isMine ? ' mine' : '');
+
+  div.style.animation = 'slideUpFade .5s var(--ease-smooth) both';
 
   div.innerHTML = getFileChipHTML(fileMeta, isMine, av);
 
   const context = { peer, role, guestConns, hostConn };
   attachFileChipEvents(div, fileMeta, isMine, context);
 
-  // Prepend so newest is at the top
-  feed.insertBefore(div, feed.firstChild);
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
 }
 
 function getFileChipHTML(fileMeta, isMine, av) {
+  const icon = mimeIcon(fileMeta.mime);
   return `
-    <div class="avatar" style="background: ${av.bg}">${av.letter}</div>
+    <div class="file-type-icon" style="background:${icon.bg}">${icon.emoji}</div>
     <div class="file-chip-info">
       <p class="file-chip-name">${escapeHTML(fileMeta.name)}</p>
-      <p class="file-chip-size">${fmt(fileMeta.size)} ${isMine ? '· Shared by you' : ''}</p>
+      <p class="file-chip-size">${fmt(fileMeta.size)}</p>
       
-      ${fileMeta.thumbnail && fileMeta.thumbnail.startsWith('data:image/') ? `<div style="margin-top:10px; border-radius:8px; overflow:hidden; border:1px solid rgba(59,130,246,0.2);"><img src="${escapeHTML(fileMeta.thumbnail)}" alt="" style="max-width:100%; display:block;" /></div>` : ''}
+      ${fileMeta.thumbnail && fileMeta.thumbnail.startsWith('data:image/') ? `<div class="thumbnail-wrap"><img src="${escapeHTML(fileMeta.thumbnail)}" alt="" /></div>` : ''}
       
-      <!-- Progress Bar (shown during active download) -->
       <div id="prog-wrap-${fileMeta.id}" style="display:none; margin-top:10px;">
         <div class="progress-track">
           <div id="prog-fill-${fileMeta.id}" class="progress-fill"></div>
@@ -948,9 +1104,12 @@ function getFileChipHTML(fileMeta, isMine, av) {
         </div>
       </div>
       
-      <div style="display: flex; gap: 8px; margin-top: 10px; flex-shrink: 0;">
+      <div style="display: flex; gap: 6px; margin-top: 10px; flex-shrink: 0; flex-wrap: wrap;">
         ${!isMine && fileMeta.mime && fileMeta.mime.startsWith('video/') 
-          ? `<button id="btn-stream-${fileMeta.id}" class="btn-primary stream-btn" style="padding: 8px 16px; font-size: 0.8rem;">▶ Stream</button>` 
+          ? `<button id="btn-stream-${fileMeta.id}" class="btn-primary stream-btn btn-sm" style="padding:8px 14px!important">▶ Stream</button>
+             <select id="stream-quality-${fileMeta.id}" class="glass-input" style="width:auto;padding:6px 8px;font-size:.72rem;cursor:pointer;flex:0;min-width:65px">
+               ${Object.entries(STREAM_QUALITIES).map(([k,v]) => `<option value="${k}" ${k==='auto'?'selected':''}>${v.label}</option>`).join('')}
+             </select>` 
           : ''}
         ${isMine 
         ? `<button id="btn-ul-${fileMeta.id}" disabled class="btn-primary btn-ghost-sm">Shared</button>`
@@ -967,16 +1126,19 @@ function attachFileChipEvents(div, fileMeta, isMine, context) {
   const { peer, role, guestConns, hostConn } = context;
 
   const btnStream = div.querySelector(`#btn-stream-${fileMeta.id}`);
+  const qualitySelect = div.querySelector(`#stream-quality-${fileMeta.id}`);
   if (btnStream) {
     btnStream.addEventListener('click', () => {
+      const quality = qualitySelect ? qualitySelect.value : 'auto';
       btnStream.disabled = true;
-      btnStream.textContent = 'Buffering...';
-      setTimeout(() => { btnStream.disabled = false; btnStream.textContent = '▶ Stream'; }, 5000);
+      btnStream.textContent = 'Buffering…';
+      if (qualitySelect) qualitySelect.disabled = true;
+      setTimeout(() => { btnStream.disabled = false; btnStream.textContent = '▶ Stream'; if (qualitySelect) qualitySelect.disabled = false; }, 8000);
 
-      const msg = { type: 'request_stream', fileId: fileMeta.id, requesterId: peer.id };
+      const msg = { type: 'request_stream', fileId: fileMeta.id, requesterId: peer.id, quality };
       if (role === 'host') {
         const ownerConn = guestConns.get(fileMeta.ownerId);
-        if (ownerConn) ownerConn.send({ type: 'peer_wants_stream', fileId: fileMeta.id, requesterId: peer.id });
+        if (ownerConn) ownerConn.send({ type: 'peer_wants_stream', fileId: fileMeta.id, requesterId: peer.id, quality });
       } else {
         hostConn.send(msg);
       }
@@ -1080,27 +1242,27 @@ function addChatToFeed(msg) {
   div.style.flexDirection = isMine ? 'row-reverse' : 'row';
   div.style.alignItems = 'flex-end';
   div.style.gap = '8px';
-  div.style.marginBottom = '12px';
+  div.style.marginBottom = '14px';
+  div.style.animation = 'slideUpFade .4s var(--ease-smooth) both';
 
   const timeStr = new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   
   const inner = `
-    <div class="avatar" style="background: ${av.bg}; width: 28px; height: 28px; font-size: 0.6rem;">${av.letter}</div>
+    <div class="avatar" style="background: ${av.bg}; width: 28px; height: 28px; font-size: .6rem;">${av.letter}</div>
     <div style="display:flex; flex-direction:column; align-items:${isMine ? 'flex-end' : 'flex-start'}; max-width:80%;">
-      <span style="font-size: 0.65rem; color: rgba(255,255,255,0.3); margin-bottom: 4px; padding: 0 4px;">
-        ${isMine ? 'You' : escapeHTML(displayName)} · ${timeStr}
+      <span class="chat-meta">
+        <span class="chat-meta-name">${isMine ? 'You' : escapeHTML(displayName)}</span>
+        <span>·</span>
+        <span>${timeStr}</span>
       </span>
-      <div style="background: ${isMine ? 'var(--accent)' : 'rgba(255,255,255,0.07)'}; 
-                  color: #fff; padding: 10px 14px; border-radius: 14px; 
-                  ${isMine ? 'border-bottom-right-radius: 4px;' : 'border-bottom-left-radius: 4px;'} 
-                  word-wrap: break-word; font-size: 0.95rem; line-height: 1.4;">
+      <div class="chat-bubble ${isMine ? 'chat-bubble-own' : 'chat-bubble-other'}"
+           style="color:#fff; padding:10px 14px; border-radius:14px; word-wrap:break-word; font-size:.95rem; line-height:1.5;">
         ${parseMarkdown(msg.text)}
       </div>
     </div>
   `;
   div.innerHTML = inner;
   
-  // Append chat (unlike files which are prepended)
   feed.appendChild(div);
   feed.scrollTop = feed.scrollHeight;
 }
@@ -1192,7 +1354,7 @@ function initiateFileTransfer(targetPeerId, fileId) {
 }
 
 // ── Direct Video Streaming (Sender Side) ─────────────────────────────────────
-function initiateVideoStreaming(targetPeerId, fileId) {
+function initiateVideoStreaming(targetPeerId, fileId, quality = 'auto') {
   const file = mySharedFiles.get(fileId);
   if (!file) {
     showToast('File no longer available for streaming.', 'error');
@@ -1206,6 +1368,11 @@ function initiateVideoStreaming(targetPeerId, fileId) {
     showToast('Video streaming not supported in this browser.', 'error');
     return;
   }
+
+  const useCanvas = quality !== 'auto' && (typeof HTMLCanvasElement.prototype.captureStream === 'function');
+  const q = STREAM_QUALITIES[quality] || STREAM_QUALITIES.auto;
+
+  showToast(`Streaming ${quality === 'auto' ? '' : q.label}...`, 'info');
 
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
@@ -1225,14 +1392,38 @@ function initiateVideoStreaming(targetPeerId, fileId) {
   
   video.onplay = () => {
     try {
-      const stream = video.captureStream ? video.captureStream(24) : video.mozCaptureStream(24);
-      if (!stream || !stream.active) {
+      let sourceStream;
+      const qualityLabel = quality === 'auto' ? 'original' : q.label;
+
+      if (useCanvas) {
+        // Canvas downscale for custom resolution
+        const canvas = document.createElement('canvas');
+        canvas.width = q.w;
+        canvas.height = q.h;
+        const ctx = canvas.getContext('2d');
+        const draw = () => {
+          if (video.paused || video.ended) return;
+          ctx.drawImage(video, 0, 0, q.w, q.h);
+          requestAnimationFrame(draw);
+        };
+        // Wait a frame for video metadata then start drawing
+        video.onseeked = () => { draw(); video.onseeked = null; };
+        setTimeout(() => draw(), 100);
+        sourceStream = canvas.captureStream(q.fps);
+        if (!sourceStream || !sourceStream.active) { useCanvas = false; }
+      }
+
+      if (!useCanvas) {
+        sourceStream = video.captureStream ? video.captureStream(q.fps) : video.mozCaptureStream(q.fps);
+      }
+
+      if (!sourceStream || !sourceStream.active) {
         showToast('Failed to capture video stream.', 'error');
         URL.revokeObjectURL(url);
         return;
       }
 
-      const call = peer.call(targetPeerId, stream, { 
+      const call = peer.call(targetPeerId, sourceStream, { 
         metadata: { type: 'video_stream', fileId: file.id } 
       });
       
@@ -1242,20 +1433,27 @@ function initiateVideoStreaming(targetPeerId, fileId) {
         return;
       }
       
-      showToast('Streaming video...', 'info');
+      // Track canvas cleanup
+      let canvasCleanup = null;
+      if (useCanvas) {
+        canvasCleanup = () => { try { sourceStream.getTracks().forEach(t => t.stop()); } catch(_) {} };
+      }
       
       video.onended = () => {
         try { call.close(); } catch (_) {}
+        if (canvasCleanup) canvasCleanup();
         URL.revokeObjectURL(url);
       };
       
       call.on('close', () => {
         try { video.pause(); } catch (_) {}
+        if (canvasCleanup) canvasCleanup();
         URL.revokeObjectURL(url);
         video.srcObject = null;
       });
 
       call.on('error', () => {
+        if (canvasCleanup) canvasCleanup();
         URL.revokeObjectURL(url);
       });
     } catch (err) {
@@ -1365,6 +1563,7 @@ function handleIncomingFileTransfer(conn, fileId) {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       }, 2000);
+      addSystemMessage(`${fileMeta.name} downloaded successfully`, '✅');
       showToast(`✅ ${escapeHTML(fileMeta.name)} downloaded!`, 'success');
     }
   };
@@ -1420,18 +1619,15 @@ function renderUserList() {
     const isMe = id === MY_ID;
     const av = getAvatarParams(id);
     const div = document.createElement('div');
-    div.className = 'file-chip';
-    div.style.padding = '8px 12px';
-    div.style.gap = '12px';
-    div.style.alignItems = 'center';
+    div.className = 'participant-row';
     
     div.innerHTML = `
-      <div class="avatar" style="background: ${av.bg}; width: 30px; height: 30px; font-size: 0.75rem;">${av.letter}</div>
-      <div style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-        <span style="font-weight: 600; font-size: 0.9rem;">${escapeHTML(data.name)}</span>
-        ${isMe ? '<span style="font-size: 0.7rem; color: var(--accent); margin-left: 5px;">(You)</span>' : ''}
-        ${role === 'host' && id === MY_ID ? '<span style="font-size: 0.7rem; color: #10b981; margin-left: 5px;">(Host)</span>' : ''}
+      <div class="avatar" style="background: ${av.bg}; width: 30px; height: 30px; font-size: .7rem;">${av.letter}</div>
+      <div style="flex:1;min-width:0">
+        <div class="participant-name">${escapeHTML(data.name)}</div>
       </div>
+      ${isMe ? '<span class="participant-tag you">You</span>' : ''}
+      ${role === 'host' && id === MY_ID ? '<span class="participant-tag host">Host</span>' : ''}
     `;
     list.appendChild(div);
   });
