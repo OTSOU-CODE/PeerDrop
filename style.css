@@ -40,6 +40,7 @@ html{font-size:16px;scroll-behavior:smooth;-webkit-tap-highlight-color:transpare
   --font-sm:clamp(0.75rem,2vw,0.85rem);
   --font-md:clamp(0.9rem,2.5vw,1rem);
 }
+[data-theme="light"]{--bg-deep:#f8fafc;--bg-surface:rgba(255,255,255,0.85);--bg-glass:rgba(255,255,255,0.7);--border-subtle:rgba(0,0,0,0.08);--border-accent:rgba(99,102,241,0.2);--text-main:#0f172a;--text-dim:rgba(15,23,42,0.6);--text-muted:rgba(15,23,42,0.4);--shadow-card:0 8px 32px rgba(0,0,0,0.08),0 0 0 1px rgba(0,0,0,0.04);--shadow-glow:0 8px 40px var(--accent-glow)}
 body {
   font-family:var(--font-sans);
   background:var(--bg-deep);
@@ -531,6 +532,17 @@ select.glass-input option{background:#121624;color:var(--text-main)}
 .qr-wrap[hidden]{display:none}
 .qr-wrap canvas{border-radius:12px;box-shadow:0 2px 16px rgba(0,0,0,0.3);background:#fff;width:140px;height:140px}
 @keyframes fadeIn{0%{opacity:0;transform:scale(0.96)}100%{opacity:1;transform:scale(1)}}
+
+/* ── File Preview ── */
+.preview-overlay{position:fixed;inset:0;z-index:1000;background:rgba(7,8,11,0.85);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s var(--ease-smooth) both}
+.preview-overlay[hidden]{display:none}
+.preview-content{background:var(--bg-surface);border-radius:var(--radius);max-width:90vw;max-height:90vh;overflow:auto;padding:20px;position:relative;box-shadow:0 8px 40px rgba(0,0,0,0.5)}
+.preview-close{position:absolute;top:8px;right:12px;background:none;border:none;color:var(--text-dim);font-size:1.5rem;cursor:pointer;line-height:1;z-index:1;min-height:44px;min-width:44px;display:flex;align-items:center;justify-content:center}
+.preview-close:hover{color:var(--text-main)}
+.preview-body img{max-width:100%;max-height:70vh;display:block;margin:0 auto;border-radius:var(--radius-sm)}
+.preview-body pre{background:rgba(0,0,0,0.3);padding:16px;border-radius:var(--radius-xs);overflow:auto;max-height:65vh;font-family:var(--font-mono);font-size:.82rem;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.preview-body iframe{border:none;width:80vw;max-width:800px;height:70vh;border-radius:var(--radius-sm);background:#fff}
+.preview-label{font-size:.72rem;color:var(--text-muted);margin-bottom:12px;text-align:center}
 
 /* ── Reduced Motion ── */
 @media(prefers-reduced-motion:reduce){

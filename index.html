@@ -41,6 +41,13 @@
   <div class="loading-sub">Establishing secure peer connection</div>
 </div>
 
+<div id="preview-overlay" class="preview-overlay" hidden onclick="this.hidden=true">
+  <div class="preview-content" onclick="event.stopPropagation()">
+    <button class="preview-close" onclick="this.closest('#preview-overlay').hidden=true">&times;</button>
+    <div id="preview-body"></div>
+  </div>
+</div>
+
 <div id="drag-overlay" aria-hidden="true">
   <div id="drag-overlay-inner">
     <div id="drag-overlay-icon">📁</div>
@@ -111,6 +118,7 @@
         </div>
       </div>
       <div class="room-header-right">
+        <button id="btn-theme" class="btn-ghost-sm" title="Toggle theme" style="font-size:1rem">🌙</button>
         <button id="btn-qr" class="btn-ghost-sm" title="Show QR Code">QR</button>
         <button id="btn-copy-link" class="btn-ghost-sm">Copy Link</button>
         <button id="btn-leave-room" class="btn-ghost-sm" style="color:var(--danger);border-color:rgba(239,68,68,0.2);">Leave</button>
@@ -144,7 +152,7 @@
   </div>
 </main>
 
-<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js" integrity="sha384-PMNj1TmCgXfW24/rfIyxYSAWwj2mffkMfguUWv08iNFcy0kTC0JN7E/tE+pJ7+fa" crossorigin="anonymous"></script>
 <script type="module" src="src/js/main.js"></script>
 </body>
 </html>
